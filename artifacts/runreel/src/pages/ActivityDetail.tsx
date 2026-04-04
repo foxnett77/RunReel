@@ -3,6 +3,7 @@ import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetSta
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
+import AnimatedMap3D from "@/components/AnimatedMap3D";
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -416,10 +417,16 @@ export default function ActivityDetail() {
         ))}
       </div>
 
-      {/* Map */}
-      {points.length > 0 && (
-        <div className="bg-white border border-border rounded-xl overflow-hidden mb-6" style={{ height: 400 }}>
-          <MapView points={points} />
+      {/* 3D Animated Map */}
+      {points.length > 1 && (
+        <div className="mb-6">
+          <AnimatedMap3D
+            points={points}
+            distanceKm={activity.distanceKm ?? 0}
+            elevationGainM={activity.elevationGainM ?? 0}
+            durationSecs={activity.durationSecs ?? 0}
+            avgPaceSecPerKm={activity.avgPaceSecPerKm ?? 0}
+          />
         </div>
       )}
 
