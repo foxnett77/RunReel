@@ -117,6 +117,11 @@ export default function ActivityDetail() {
     navigate("/activities");
   };
 
+  const reelMimeType = MediaRecorder.isTypeSupported("video/mp4")
+    ? "video/mp4"
+    : "video/webm; codecs=vp9";
+  const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
+
   const handleCreateReel = async () => {
     if (!activity || !canvasRef.current) return;
     setReelState("recording");
@@ -148,18 +153,18 @@ export default function ActivityDetail() {
     const toX = (lon: number) => ((lon - minLon) / ((maxLon - minLon) || 1)) * (W * (1 - pad * 2)) + W * pad;
     const toY = (lat: number) => H * 0.7 - ((lat - minLat) / ((maxLat - minLat) || 1)) * (H * 0.5);
 
-    const chunks = Math.ceil(points.length / 4);
     const fps = 30;
     const durationMs = 8000;
     const totalFrames = Math.round((durationMs / 1000) * fps);
 
     const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm; codecs=vp9", videoBitsPerSecond: 4000000 });
+    const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 4000000 });
     const chunks2: Blob[] = [];
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks2.push(e.data); };
 
     recorder.onstop = () => {
-      const blob = new Blob(chunks2, { type: "video/webm" });
+      const mimeBase = reelMimeType.split(";")[0];
+      const blob = new Blob(chunks2, { type: mimeBase });
       const url = URL.createObjectURL(blob);
       setReelUrl(url);
       setReelState("done");
@@ -339,36 +344,57 @@ export default function ActivityDetail() {
 
       {/* Reel download */}
       {reelState === "done" && reelUrl && (
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 mb-6 flex items-center gap-4">
-          <div className="text-2xl">🎬</div>
-          <div className="flex-1">
-            <p className="font-semibold text-foreground">Reel pronto!</p>
-            <p className="text-sm text-muted-foreground">Il tuo video e stato creato.</p>
+        <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 mb-6">
+          <div className="flex items-center gap-4 mb-3">
+            <div className="text-2xl">🎬</div>
+            <div className="flex-1">
+              <p className="font-semibold text-foreground">Reel pronto!</p>
+              <p className="text-sm text-muted-foreground">Il tuo video è stato creato.</p>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <a
-              href={reelUrl}
-              download={`runreel-${activity.id}.webm`}
-              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors"
-            >
-              Scarica
-            </a>
+          <div className="flex flex-wrap gap-2">
             {typeof navigator.share === "function" && (
               <button
                 onClick={async () => {
                   try {
                     const response = await fetch(reelUrl);
                     const blob = await response.blob();
-                    const file = new File([blob], `runreel-${activity.id}.webm`, { type: "video/webm" });
+                    const mimeBase = reelMimeType.split(";")[0];
+                    const file = new File([blob], `runreel-${activity.id}.${reelExtension}`, { type: mimeBase });
                     await navigator.share({ files: [file], title: activity.name });
                   } catch { /* ignore */ }
                 }}
-                className="px-4 py-2 border border-border rounded-lg text-sm font-semibold hover:bg-muted transition-colors"
+                className="flex-1 px-4 py-2.5 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
               >
-                Condividi
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2v13M8 7l4-5 4 5"/>
+                  <path d="M20 21H4"/>
+                </svg>
+                Salva in Foto
               </button>
             )}
+            <a
+              href={reelUrl}
+              download={`runreel-${activity.id}.${reelExtension}`}
+              className="flex-1 px-4 py-2.5 border border-border rounded-lg text-sm font-semibold hover:bg-muted transition-colors flex items-center justify-center gap-2"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2v13M8 11l4 4 4-4"/>
+                <path d="M20 21H4"/>
+              </svg>
+              Scarica
+            </a>
           </div>
+          {reelExtension === "mp4" && (
+            <p className="text-xs text-muted-foreground mt-2.5">
+              Tocca <strong>Salva in Foto</strong> → il sistema ti chiederà dove salvarlo → scegli <strong>Foto</strong> per aggiungerlo alla libreria.
+            </p>
+          )}
+          {reelExtension === "webm" && (
+            <p className="text-xs text-muted-foreground mt-2.5">
+              Su Android tocca <strong>Salva in Foto</strong> per salvarlo direttamente nella galleria.
+            </p>
+          )}
         </div>
       )}
 
