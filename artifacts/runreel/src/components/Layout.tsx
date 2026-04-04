@@ -83,6 +83,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <main className="flex-1">
         {children}
       </main>
+
+      {/* Footer */}
+      <footer className="py-3 text-center text-xs text-muted-foreground border-t border-border">
+        RunReel v0.1
+      </footer>
     </div>
   );
 }
