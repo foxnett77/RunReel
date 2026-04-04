@@ -1,0 +1,26 @@
+{
+  "name": "RunReel",
+  "short_name": "RunReel",
+  "description": "Traccia le tue attivita sportive e crea reel per i social",
+  "theme_color": "#E11D48",
+  "background_color": "#FFFFFF",
+  "display": "standalone",
+  "orientation": "portrait",
+  "start_url": "/",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["sports", "fitness", "health"]
+}

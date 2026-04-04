@@ -1,22 +1,24 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: RunReel API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: activities
+    description: GPX activity management
+  - name: live
+    description: Live tracking sessions
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +26,160 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /activities:
+    get:
+      operationId: listActivities
+      tags: [activities]
+      summary: List all saved activities
+      responses:
+        "200":
+          description: List of activities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Activity"
+    post:
+      operationId: createActivity
+      tags: [activities]
+      summary: Save a new activity (from GPX upload)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateActivityBody"
+      responses:
+        "201":
+          description: Activity created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Activity"
+
+  /activities/{id}:
+    get:
+      operationId: getActivity
+      tags: [activities]
+      summary: Get a single activity with full track data
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Activity details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityDetail"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteActivity
+      tags: [activities]
+      summary: Delete an activity
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /activities/stats/summary:
+    get:
+      operationId: getStatsSummary
+      tags: [activities]
+      summary: Get aggregated stats for all activities
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsSummary"
+
+  /live/session:
+    post:
+      operationId: startLiveSession
+      tags: [live]
+      summary: Start a new live tracking session
+      responses:
+        "201":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveSession"
+
+  /live/session/{sessionId}:
+    get:
+      operationId: getLiveSession
+      tags: [live]
+      summary: Get current live session data
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Live session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveSession"
+    delete:
+      operationId: stopLiveSession
+      tags: [live]
+      summary: Stop a live session and optionally save as activity
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session stopped, optionally saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Activity"
+
+  /live/session/{sessionId}/point:
+    post:
+      operationId: addLivePoint
+      tags: [live]
+      summary: Add a GPS point to the live session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrackPoint"
+      responses:
+        "200":
+          description: Point added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveSession"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +187,120 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    TrackPoint:
+      type: object
+      properties:
+        lat:
+          type: number
+        lon:
+          type: number
+        ele:
+          type: number
+        time:
+          type: string
+      required: [lat, lon]
+
+    Activity:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        date:
+          type: string
+        distanceKm:
+          type: number
+        durationSecs:
+          type: integer
+        elevationGainM:
+          type: number
+        avgPaceSecPerKm:
+          type: integer
+        maxSpeedKmh:
+          type: number
+        type:
+          type: string
+          enum: [run, walk, bike, hike, other]
+      required: [id, name, date, distanceKm, durationSecs, type]
+
+    ActivityDetail:
+      allOf:
+        - $ref: "#/components/schemas/Activity"
+        - type: object
+          properties:
+            points:
+              type: array
+              items:
+                $ref: "#/components/schemas/TrackPoint"
+          required: [points]
+
+    CreateActivityBody:
+      type: object
+      properties:
+        name:
+          type: string
+        date:
+          type: string
+        distanceKm:
+          type: number
+        durationSecs:
+          type: integer
+        elevationGainM:
+          type: number
+        avgPaceSecPerKm:
+          type: integer
+        maxSpeedKmh:
+          type: number
+        type:
+          type: string
+          enum: [run, walk, bike, hike, other]
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrackPoint"
+      required: [name, date, distanceKm, durationSecs, type, points]
+
+    StatsSummary:
+      type: object
+      properties:
+        totalActivities:
+          type: integer
+        totalDistanceKm:
+          type: number
+        totalDurationSecs:
+          type: integer
+        totalElevationGainM:
+          type: number
+        longestRunKm:
+          type: number
+        bestPaceSecPerKm:
+          type: integer
+        activitiesByType:
+          type: object
+          additionalProperties:
+            type: integer
+      required: [totalActivities, totalDistanceKm, totalDurationSecs, activitiesByType]
+
+    LiveSession:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        startedAt:
+          type: string
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrackPoint"
+        distanceKm:
+          type: number
+        durationSecs:
+          type: integer
+        currentPaceSecPerKm:
+          type: integer
+        isActive:
+          type: boolean
+      required: [sessionId, startedAt, points, distanceKm, durationSecs, isActive]
