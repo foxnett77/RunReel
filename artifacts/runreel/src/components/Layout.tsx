@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { usePWAInstall } from "@/hooks/usePWAInstall";
@@ -9,12 +10,53 @@ const navItems = [
   { href: "/upload", label: "Carica" },
 ];
 
+function useIsIOS() {
+  const [isIOS, setIsIOS] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  useEffect(() => {
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const standalone = window.matchMedia("(display-mode: standalone)").matches;
+    setIsIOS(ios);
+    setIsStandalone(standalone);
+  }, []);
+  return { isIOS, isStandalone };
+}
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { canInstall, isInstalling, install } = usePWAInstall();
+  const { isIOS, isStandalone } = useIsIOS();
+  const [iosBannerDismissed, setIosBannerDismissed] = useState(false);
+
+  const showIOSBanner = isIOS && !isStandalone && !canInstall && !iosBannerDismissed;
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
+      {/* iOS install hint */}
+      {showIOSBanner && (
+        <div className="bg-blue-50 border-b border-blue-100 px-4 py-2.5 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm text-blue-800">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4M12 8h.01"/>
+            </svg>
+            <span>
+              Su iPhone apri questa pagina in <strong>Safari</strong>, poi tocca{" "}
+              <strong>Condividi</strong> e scegli <strong>Aggiungi a schermata Home</strong>.
+            </span>
+          </div>
+          <button
+            onClick={() => setIosBannerDismissed(true)}
+            className="shrink-0 text-blue-400 hover:text-blue-600 transition-colors"
+            aria-label="Chiudi"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Install banner */}
       {canInstall && (
         <div className="bg-primary text-white px-4 py-2.5 flex items-center justify-between gap-4">
