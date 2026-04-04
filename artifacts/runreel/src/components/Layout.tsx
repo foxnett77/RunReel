@@ -81,12 +81,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-50 bg-white border-b border-border shadow-sm">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <Link href="/">
-            <span className="font-black text-xl tracking-tight cursor-pointer flex items-baseline gap-1.5">
-              <span>
+            <span className="cursor-pointer flex flex-col leading-tight">
+              <span className="font-black text-xl tracking-tight">
                 <span className="text-primary">Run</span>
                 <span className="text-foreground">Reel</span>
               </span>
-              <span className="text-[10px] font-normal text-muted-foreground">v0.1</span>
+              <span className="text-[10px] font-normal text-muted-foreground">v 0.2</span>
             </span>
           </Link>
           <nav className="flex items-center gap-1">
