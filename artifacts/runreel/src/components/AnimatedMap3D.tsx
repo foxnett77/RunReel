@@ -318,6 +318,7 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
   const animRef = useRef<number | null>(null);
+  const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [ready, setReady] = useState(false);
@@ -447,11 +448,18 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
 
       mapRef.current = map;
 
+      // Fallback: if map tiles don't load within 8s, use canvas
+      loadTimerRef.current = setTimeout(() => {
+        setWebglFailed(true);
+      }, 8000);
+
       map.on("error", () => {
-        if (!ready) setWebglFailed(true);
+        if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+        setWebglFailed(true);
       });
 
       map.on("load", () => {
+        if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
         try {
           map.addSource("route-ghost", {
             type: "geojson",
@@ -478,11 +486,12 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
     }).catch(() => setWebglFailed(true));
 
     return () => {
+      if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
       if (animRef.current) cancelAnimationFrame(animRef.current);
       if (mapRef.current) (mapRef.current as { remove(): void }).remove();
       mapRef.current = null;
     };
-  }, [points, buildSegmentFeatures, ready]);
+  }, [points, buildSegmentFeatures]);
 
   const stopAnimation = useCallback(() => {
     if (animRef.current) { cancelAnimationFrame(animRef.current); animRef.current = null; }
