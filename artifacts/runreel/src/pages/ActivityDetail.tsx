@@ -3,7 +3,7 @@ import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetSta
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
-import AnimatedMap3D from "@/components/AnimatedMap3D";
+import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMap3D";
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -105,6 +105,7 @@ export default function ActivityDetail() {
   const [reelState, setReelState] = useState<"idle" | "recording" | "done">("idle");
   const [reelUrl, setReelUrl] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const map3dRef = useRef<AnimatedMap3DHandle>(null);
 
   const { data: activity, isLoading, error } = useGetActivity(id, {
     query: { enabled: !!id },
@@ -124,164 +125,157 @@ export default function ActivityDetail() {
   const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
   const handleCreateReel = async () => {
-    if (!activity || !canvasRef.current) return;
+    if (!activity) return;
+    const points = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
+    if (points.length < 2) return;
+
     setReelState("recording");
     setReelUrl(null);
 
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const W = 1080;
-    const H = 1920;
-    canvas.width = W;
-    canvas.height = H;
-
-    const points = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
-    if (points.length < 2) {
-      setReelState("idle");
-      return;
-    }
-
-    const lats = points.map((p) => p.lat);
-    const lons = points.map((p) => p.lon);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
-    const pad = 0.1;
-
-    const toX = (lon: number) => ((lon - minLon) / ((maxLon - minLon) || 1)) * (W * (1 - pad * 2)) + W * pad;
-    const toY = (lat: number) => H * 0.7 - ((lat - minLat) / ((maxLat - minLat) || 1)) * (H * 0.5);
-
+    const W = 1080, H = 1920;
+    const MAP_H = Math.round(H * 0.75);   // 1440 — map zone
+    const STATS_Y = MAP_H;                 // 480px stats zone
     const fps = 30;
-    const durationMs = 8000;
-    const totalFrames = Math.round((durationMs / 1000) * fps);
 
-    const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 4000000 });
-    const chunks2: Blob[] = [];
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks2.push(e.data); };
-
-    recorder.onstop = () => {
-      const mimeBase = reelMimeType.split(";")[0];
-      const blob = new Blob(chunks2, { type: mimeBase });
-      const url = URL.createObjectURL(blob);
-      setReelUrl(url);
-      setReelState("done");
-    };
-
-    recorder.start();
-
-    let frame = 0;
-    const animate = () => {
-      const progress = frame / totalFrames;
-      const pointsToShow = Math.max(2, Math.round(progress * points.length));
-
-      // Background
+    // ── Helper: draw stats panel ─────────────────────────────────────────────
+    const drawStats = (ctx: CanvasRenderingContext2D, animProgress: number) => {
       ctx.fillStyle = "#0a0a0a";
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(0, STATS_Y, W, H - STATS_Y);
 
-      // Grid lines
-      ctx.strokeStyle = "rgba(255,255,255,0.05)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i < 10; i++) {
-        ctx.beginPath(); ctx.moveTo(i * W / 10, 0); ctx.lineTo(i * W / 10, H); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0, i * H / 10); ctx.lineTo(W, i * H / 10); ctx.stroke();
-      }
-
-      // Track glow
-      ctx.shadowBlur = 20;
-      ctx.shadowColor = "#E11D48";
-      ctx.strokeStyle = "rgba(225,29,72,0.3)";
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      for (let i = 0; i < points.length; i++) {
-        const x = toX(points[i].lon);
-        const y = toY(points[i].lat);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // Animated track
-      ctx.shadowBlur = 12;
-      ctx.shadowColor = "#E11D48";
-      ctx.strokeStyle = "#E11D48";
-      ctx.lineWidth = 4;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      for (let i = 0; i < pointsToShow; i++) {
-        const x = toX(points[i].lon);
-        const y = toY(points[i].lat);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-
-      // Current point dot
-      if (pointsToShow < points.length) {
-        const cur = points[pointsToShow - 1];
-        const cx = toX(cur.lon);
-        const cy = toY(cur.lat);
-        ctx.beginPath();
-        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
-        ctx.fillStyle = "white";
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-        ctx.fillStyle = "#E11D48";
-        ctx.fill();
-      }
-
-      // Title
-      ctx.fillStyle = "rgba(0,0,0,0.7)";
-      ctx.fillRect(0, H * 0.72, W, H * 0.28);
-
-      ctx.fillStyle = "#E11D48";
-      ctx.font = `bold 60px Inter, sans-serif`;
+      // Brand
       ctx.textAlign = "left";
-      ctx.fillText("RunReel", 80, H * 0.72 + 90);
+      ctx.fillStyle = "#E11D48";
+      ctx.font = "bold 70px Inter,system-ui,sans-serif";
+      ctx.fillText("RunReel", 80, STATS_Y + 100);
 
-      ctx.fillStyle = "white";
-      ctx.font = `bold 48px Inter, sans-serif`;
-      ctx.fillText(activity.name, 80, H * 0.72 + 160);
+      // Activity name (max 28 chars to fit)
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 52px Inter,system-ui,sans-serif";
+      const name = activity.name.length > 28 ? activity.name.slice(0, 27) + "…" : activity.name;
+      ctx.fillText(name, 80, STATS_Y + 175);
 
-      const alpha = Math.min(1, progress * 4);
+      // Stat cards — fade in
+      const alpha = Math.min(1, animProgress * 5);
       ctx.globalAlpha = alpha;
 
-      ctx.fillStyle = "rgba(255,255,255,0.15)";
-      ctx.roundRect(60, H * 0.72 + 200, 290, 100, 16);
-      ctx.fill();
-      ctx.fillStyle = "white";
-      ctx.font = `bold 42px Inter, sans-serif`;
-      ctx.fillText(`${activity.distanceKm?.toFixed(2)} km`, 80, H * 0.72 + 262);
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.font = `28px Inter, sans-serif`;
-      ctx.fillText("distanza", 80, H * 0.72 + 296);
+      const drawCard = (x: number, y: number, w: number, h: number, big: string, small: string) => {
+        ctx.fillStyle = "rgba(255,255,255,0.10)";
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, 14);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `bold 44px Inter,system-ui,sans-serif`;
+        ctx.fillText(big, x + 22, y + 60);
+        ctx.fillStyle = "rgba(255,255,255,0.55)";
+        ctx.font = `28px Inter,system-ui,sans-serif`;
+        ctx.fillText(small, x + 22, y + 95);
+      };
 
-      ctx.fillStyle = "rgba(255,255,255,0.15)";
-      ctx.roundRect(380, H * 0.72 + 200, 290, 100, 16);
-      ctx.fill();
-      ctx.fillStyle = "white";
-      ctx.font = `bold 42px Inter, sans-serif`;
       const pace = activity.avgPaceSecPerKm ?? 0;
-      ctx.fillText(`${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, 400, H * 0.72 + 262);
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.font = `28px Inter, sans-serif`;
-      ctx.fillText("passo", 400, H * 0.72 + 296);
+      drawCard(60, STATS_Y + 210, 460, 115, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
+      drawCard(560, STATS_Y + 210, 460, 115, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo medio");
+      const dur = activity.durationSecs ?? 0;
+      drawCard(60, STATS_Y + 345, 460, 115, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
+      drawCard(560, STATS_Y + 345, 460, 115, `+${Math.round(activity.elevationGainM ?? 0)}m`, "dislivello");
 
       ctx.globalAlpha = 1;
-
-      frame++;
-      if (frame < totalFrames) {
-        requestAnimationFrame(animate);
-      } else {
-        recorder.stop();
-      }
     };
 
-    requestAnimationFrame(animate);
+    // ── Try to capture the 3D MapLibre canvas ───────────────────────────────
+    const mapCanvas = map3dRef.current?.getMapCanvas();
+    const mapReady = map3dRef.current?.isReady() ?? false;
+
+    if (mapCanvas && mapReady) {
+      // === 3D MAP REEL ===
+      const composite = document.createElement("canvas");
+      composite.width = W; composite.height = H;
+      const ctx = composite.getContext("2d");
+      if (!ctx) { setReelState("idle"); return; }
+
+      const stream = composite.captureStream(fps);
+      const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 8_000_000 });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: reelMimeType.split(";")[0] });
+        setReelUrl(URL.createObjectURL(blob)); setReelState("done");
+      };
+      recorder.start();
+
+      let animProgress = 0;
+      let frameActive = true;
+      const drawFrame = () => {
+        if (!frameActive) return;
+        // Cover-scale: fill MAP_H, crop if needed
+        const mc = mapCanvas;
+        const targetAspect = W / MAP_H;
+        const srcAspect = mc.width / mc.height;
+        let sx = 0, sy = 0, sw = mc.width, sh = mc.height;
+        if (srcAspect > targetAspect) { sw = Math.round(mc.height * targetAspect); sx = Math.round((mc.width - sw) / 2); }
+        else { sh = Math.round(mc.width / targetAspect); sy = Math.round((mc.height - sh) / 2); }
+        ctx.drawImage(mc, sx, sy, sw, sh, 0, 0, W, MAP_H);
+        drawStats(ctx, animProgress);
+        requestAnimationFrame(drawFrame);
+      };
+      drawFrame();
+
+      const cancelReel = map3dRef.current!.startReelAnimation((t: number) => { animProgress = t; }, () => {
+        frameActive = false;
+        setTimeout(() => recorder.stop(), 500);
+      });
+      void cancelReel;
+
+    } else {
+      // === FALLBACK: flat 2D canvas reel ===
+      const canvas = canvasRef.current!;
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { setReelState("idle"); return; }
+
+      const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
+      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+      const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+      const pad = 0.08;
+      const toX = (lon: number) => ((lon - minLon) / ((maxLon - minLon) || 1)) * (W * (1 - pad * 2)) + W * pad;
+      const toY = (lat: number) => MAP_H * 0.95 - ((lat - minLat) / ((maxLat - minLat) || 1)) * (MAP_H * 0.82);
+
+      const durationMs = 10000;
+      const totalFrames = Math.round((durationMs / 1000) * fps);
+      const stream = canvas.captureStream(fps);
+      const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 5_000_000 });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: reelMimeType.split(";")[0] });
+        setReelUrl(URL.createObjectURL(blob)); setReelState("done");
+      };
+      recorder.start();
+
+      let frame = 0;
+      const animate = () => {
+        const progress = frame / totalFrames;
+        const pointsToShow = Math.max(2, Math.round(progress * points.length));
+        ctx.fillStyle = "#0f172a"; ctx.fillRect(0, 0, W, MAP_H);
+        ctx.strokeStyle = "rgba(225,29,72,0.18)"; ctx.lineWidth = 5; ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath();
+        points.forEach((p, i) => { const x = toX(p.lon), y = toY(p.lat); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+        ctx.stroke();
+        ctx.shadowBlur = 14; ctx.shadowColor = "#E11D48"; ctx.strokeStyle = "#E11D48"; ctx.lineWidth = 6; ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath();
+        for (let i = 0; i < pointsToShow; i++) { const x = toX(points[i].lon), y = toY(points[i].lat); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        ctx.stroke(); ctx.shadowBlur = 0;
+        if (pointsToShow < points.length) {
+          const c = points[pointsToShow - 1];
+          ctx.beginPath(); ctx.arc(toX(c.lon), toY(c.lat), 18, 0, Math.PI * 2); ctx.fillStyle = "white"; ctx.fill();
+          ctx.beginPath(); ctx.arc(toX(c.lon), toY(c.lat), 10, 0, Math.PI * 2); ctx.fillStyle = "#E11D48"; ctx.fill();
+        }
+        drawStats(ctx, progress);
+        frame++;
+        if (frame < totalFrames) requestAnimationFrame(animate);
+        else recorder.stop();
+      };
+      requestAnimationFrame(animate);
+    }
   };
 
   if (isLoading) {
@@ -421,6 +415,7 @@ export default function ActivityDetail() {
       {points.length > 1 && (
         <div className="mb-6">
           <AnimatedMap3D
+            ref={map3dRef}
             points={points}
             distanceKm={activity.distanceKm ?? 0}
             elevationGainM={activity.elevationGainM ?? 0}

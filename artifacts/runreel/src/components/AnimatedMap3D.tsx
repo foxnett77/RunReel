@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 
 type Point = { lat: number; lon: number; ele?: number; time?: string };
 
@@ -126,13 +126,13 @@ function CanvasFallback({ points, segSpeeds, minSpeed, maxSpeed, cumDist, distan
       ctx.beginPath(); ctx.moveTo(0, i * H / 8); ctx.lineTo(W, i * H / 8); ctx.stroke();
     }
 
-    const range = maxSpeed - minSpeed || 1;
+    void minSpeed; void maxSpeed; void segSpeeds; // kept in props for CanvasFallback compatibility
     const totalDist = cumDist[cumDist.length - 1];
     const targetDist = prog * totalDist;
 
-    // Full ghost route
-    ctx.globalAlpha = 0.15;
-    ctx.strokeStyle = "#ffffff";
+    // Full ghost route (light red)
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = "#E11D48";
     ctx.lineWidth = 3;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
@@ -144,37 +144,33 @@ function CanvasFallback({ points, segSpeeds, minSpeed, maxSpeed, cumDist, distan
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // Speed-colored segments up to progress
-    for (let i = 0; i < segSpeeds.length; i++) {
-      if (cumDist[i] >= targetDist) break;
-      const normalized = (segSpeeds[i] - minSpeed) / range;
-      const color = lerpColor(normalized);
-
-      const segEnd = Math.min(cumDist[i + 1], targetDist);
-      const segStart = cumDist[i];
-      const segLen = cumDist[i + 1] - segStart;
-      const partFrac = segLen > 0 ? (segEnd - segStart) / segLen : 1;
-
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      const endLon = p1.lon + (p2.lon - p1.lon) * partFrac;
-      const endLat = p1.lat + (p2.lat - p1.lat) * partFrac;
-
-      const [x1, y1] = project(p1.lon, p1.lat, W, H);
-      const [x2, y2] = project(endLon, endLat, W, H);
-
-      ctx.shadowBlur = 6;
-      ctx.shadowColor = color;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 4;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
+    // Animated red route up to progress
+    if (targetDist > 0) {
+      const progressCoords: [number, number][] = [];
+      for (let i = 0; i < points.length; i++) {
+        if (cumDist[i] <= targetDist) { progressCoords.push(project(points[i].lon, points[i].lat, W, H)); }
+        else {
+          const segLen = cumDist[i] - (cumDist[i - 1] ?? 0);
+          const f = segLen > 0 ? (targetDist - (cumDist[i - 1] ?? 0)) / segLen : 0;
+          const lon = points[i - 1].lon + (points[i].lon - points[i - 1].lon) * f;
+          const lat = points[i - 1].lat + (points[i].lat - points[i - 1].lat) * f;
+          progressCoords.push(project(lon, lat, W, H));
+          break;
+        }
+      }
+      if (progressCoords.length >= 2) {
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = "#E11D48";
+        ctx.strokeStyle = "#E11D48";
+        ctx.lineWidth = 4;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        progressCoords.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
     }
-    ctx.shadowBlur = 0;
 
     // Runner dot
     if (prog > 0 && prog < 1) {
@@ -323,7 +319,17 @@ const OFFLINE_STYLE = {
   ],
 };
 
-export default function AnimatedMap3D({ points, distanceKm, elevationGainM, durationSecs, avgPaceSecPerKm }: Props) {
+export interface AnimatedMap3DHandle {
+  getMapCanvas(): HTMLCanvasElement | null;
+  isReady(): boolean;
+  /** Starts a reel animation from the beginning. Returns a cleanup/cancel fn. */
+  startReelAnimation(onProgress: (t: number) => void, onComplete: () => void): () => void;
+}
+
+const AnimatedMap3D = forwardRef<AnimatedMap3DHandle, Props>(function AnimatedMap3D(
+  { points, distanceKm, elevationGainM, durationSecs, avgPaceSecPerKm },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
   const animRef = useRef<number | null>(null);
@@ -453,11 +459,11 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
       })();
 
       m.addSource("route-ghost", { type: "geojson", data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] } });
-      m.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "rgba(255,255,255,0.30)", "line-width": 4 } });
+      m.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "rgba(225,29,72,0.25)", "line-width": 4 } });
       m.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: speedFeatures } });
-      m.addLayer({ id: "route-speed", type: "line", source: "route-speed", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 5 } });
+      m.addLayer({ id: "route-speed", type: "line", source: "route-speed", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#E11D48", "line-width": 5 } });
       m.addSource("route-progress", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-      m.addLayer({ id: "route-progress", type: "line", source: "route-progress", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 4, "line-opacity": 0.9 } });
+      m.addLayer({ id: "route-progress", type: "line", source: "route-progress", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 3, "line-opacity": 0.85 } });
       m.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coords[0] } } });
       m.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
       m.addLayer({ id: "runner-inner", type: "circle", source: "runner", paint: { "circle-radius": 5, "circle-color": "#E11D48" } });
@@ -496,6 +502,7 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
           bearing: -20,
           failIfMajorPerformanceCaveat: false,
           antialias: false,
+          preserveDrawingBuffer: true, // allows canvas.toDataURL / drawImage for reel
         }) as unknown as MapFull;
       } catch {
         setWebglFailed(true);
@@ -578,7 +585,60 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
     map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, pitch: 50, bearing: -20, duration: 800 });
   }, [stopAnimation, points]);
 
-  // ── Canvas fallback if WebGL unavailable ──
+  // ── Expose handle to parent (for reel capture) ────────────────────────────
+  useImperativeHandle(ref, () => ({
+    getMapCanvas: () => {
+      if (!mapRef.current) return null;
+      try { return (mapRef.current as { getCanvas(): HTMLCanvasElement }).getCanvas(); } catch { return null; }
+    },
+    isReady: () => ready,
+    startReelAnimation: (onProgress: (t: number) => void, onComplete: () => void) => {
+      if (!mapRef.current || !segmentData.current) { setTimeout(onComplete, 100); return () => {}; }
+      const m = mapRef.current as {
+        getSource(id: string): { setData(d: object): void } | undefined;
+        easeTo(o: object): void;
+        fitBounds(b: [[number, number], [number, number]], o?: object): void;
+      };
+      const { cumDist } = segmentData.current;
+      const totalDist = cumDist[cumDist.length - 1];
+      // Reset runner + progress to start
+      m.getSource("route-progress")?.setData({ type: "FeatureCollection", features: [] });
+      m.getSource("runner")?.setData({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [points[0].lon, points[0].lat] } });
+      const lons = points.map(p => p.lon), lats = points.map(p => p.lat);
+      m.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, pitch: 50, bearing: -20, duration: 500 });
+
+      const REEL_DURATION_MS = 15000;
+      const startWall = performance.now() + 700;
+      let rafId: number;
+      const tick = (now: number) => {
+        const t = Math.min(Math.max(0, now - startWall) / REEL_DURATION_MS, 1);
+        const tIdx = Math.min(Math.floor(t * (points.length - 1)), points.length - 2);
+        const frac = t * (points.length - 1) - tIdx;
+        const coord: [number, number] = [
+          points[tIdx].lon + (points[tIdx + 1].lon - points[tIdx].lon) * frac,
+          points[tIdx].lat + (points[tIdx + 1].lat - points[tIdx].lat) * frac,
+        ];
+        const targetDist = t * totalDist;
+        const coords: [number, number][] = [];
+        for (let i = 0; i < points.length; i++) {
+          if (cumDist[i] <= targetDist) { coords.push([points[i].lon, points[i].lat]); }
+          else { const f = cumDist[i] - (cumDist[i-1]??0) > 0 ? (targetDist-(cumDist[i-1]??0))/(cumDist[i]-(cumDist[i-1]??0)) : 0; coords.push([points[i-1].lon+(points[i].lon-points[i-1].lon)*f, points[i-1].lat+(points[i].lat-points[i-1].lat)*f]); break; }
+        }
+        m.getSource("runner")?.setData({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coord } });
+        if (coords.length >= 2) m.getSource("route-progress")?.setData({ type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] });
+        if (t > 0.05) {
+          const bear = bearingDeg({ lat: points[tIdx].lat, lon: points[tIdx].lon }, { lat: points[tIdx+1].lat, lon: points[tIdx+1].lon });
+          m.easeTo({ center: coord, bearing: bear - 20, pitch: 52, duration: 150, easing: (x: number) => x });
+        }
+        onProgress(t);
+        if (t < 1) rafId = requestAnimationFrame(tick);
+        else onComplete();
+      };
+      rafId = requestAnimationFrame(tick);
+      return () => cancelAnimationFrame(rafId);
+    },
+  }), [ready, points]);
+
   if (webglFailed) {
     // Compute inline if segmentData ref isn't ready yet (avoids black screen race)
     const data = segmentData.current ?? (() => {
@@ -630,13 +690,6 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
         ))}
       </div>
 
-      {/* Speed legend */}
-      <div className="absolute top-3 right-3 bg-black/60 backdrop-blur-sm rounded-lg px-3 py-2 text-white z-10">
-        <div className="text-[10px] text-white/60 uppercase tracking-wider mb-1.5">Velocità</div>
-        <div className="w-24 h-2.5 rounded-full" style={{ background: "linear-gradient(to right,#dc4444,#dbb308,#22c55e)" }} />
-        <div className="flex justify-between text-[9px] text-white/50 mt-0.5"><span>lento</span><span>veloce</span></div>
-      </div>
-
       {/* Controls */}
       {ready && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 z-10">
@@ -670,4 +723,6 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
       )}
     </div>
   );
-}
+});
+
+export default AnimatedMap3D;
