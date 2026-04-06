@@ -314,6 +314,15 @@ function CanvasFallback({ points, segSpeeds, minSpeed, maxSpeed, cumDist, distan
 
 // ─── MapLibre 3D map ──────────────────────────────────────────────────────────
 
+// Minimal offline MapLibre style — no network requests, loads instantly
+const OFFLINE_STYLE = {
+  version: 8 as const,
+  sources: {},
+  layers: [
+    { id: "bg", type: "background", paint: { "background-color": "#0f172a" } },
+  ],
+};
+
 export default function AnimatedMap3D({ points, distanceKm, elevationGainM, durationSecs, avgPaceSecPerKm }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<unknown>(null);
@@ -434,12 +443,10 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
       try {
         map = new ml.Map({
           container: containerRef.current,
-          style: "https://tiles.openfreemap.org/styles/liberty",
+          style: OFFLINE_STYLE as unknown as string,
           center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2],
           pitch: 50,
           bearing: -20,
-          antialias: true,
-          failIfMajorPerformanceCaveat: false,
         }) as MapType;
       } catch {
         setWebglFailed(true);
@@ -448,24 +455,23 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
 
       mapRef.current = map;
 
-      // Fallback: if map tiles don't load within 8s, use canvas
+      map.on("error", () => setWebglFailed(true));
+
+      // Safety: fall back to canvas if map doesn't become ready in 2.5s
       loadTimerRef.current = setTimeout(() => {
+        if (!mapRef.current) return;
         setWebglFailed(true);
-      }, 8000);
+      }, 2500);
 
-      map.on("error", () => {
-        if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
-        setWebglFailed(true);
-      });
-
-      map.on("load", () => {
+      // With offline style, load can fire before listener is attached — handle both
+      const onLoaded = () => {
         if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
         try {
           map.addSource("route-ghost", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: points.map((p) => [p.lon, p.lat]) } }] },
           });
-          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", paint: { "line-color": "rgba(0,0,0,0.15)", "line-width": 5, "line-cap": "round", "line-join": "round" } });
+          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", paint: { "line-color": "rgba(255,255,255,0.08)", "line-width": 5, "line-cap": "round", "line-join": "round" } });
 
           map.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: buildSegmentFeatures() } });
           map.addLayer({ id: "route-speed", type: "line", source: "route-speed", paint: { "line-color": ["get", "color"], "line-width": 5, "line-cap": "round", "line-join": "round" } });
@@ -477,12 +483,19 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
           map.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
           map.addLayer({ id: "runner-inner", type: "circle", source: "runner", paint: { "circle-radius": 5, "circle-color": "#E11D48" } });
 
-          map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 60, pitch: 50, bearing: -20, duration: 1200 });
+          map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 60, pitch: 50, bearing: -20, duration: 800 });
           setReady(true);
         } catch {
           setWebglFailed(true);
         }
-      });
+      };
+
+      const mapWithCheck = map as MapType & { isStyleLoaded(): boolean };
+      if (mapWithCheck.isStyleLoaded()) {
+        onLoaded();
+      } else {
+        map.on("load", onLoaded);
+      }
     }).catch(() => setWebglFailed(true));
 
     return () => {
@@ -530,7 +543,7 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
     map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, pitch: 50, bearing: -20, duration: 800 });
   }, [stopAnimation, points]);
 
-  // ── Fallback to canvas if WebGL unavailable ──
+  // ── Canvas fallback if WebGL unavailable ──
   if (webglFailed && segmentData.current) {
     const { speeds, minSpeed, maxSpeed, cumDist } = segmentData.current;
     return (
@@ -599,11 +612,11 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
         </div>
       )}
 
-      {!ready && !webglFailed && (
-        <div className="absolute inset-0 flex items-center justify-center bg-muted">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80">
+          <div className="flex items-center gap-2 text-white/60 text-sm">
             <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            Caricamento mappa…
+            Preparazione mappa…
           </div>
         </div>
       )}
