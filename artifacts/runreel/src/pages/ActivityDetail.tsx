@@ -171,7 +171,11 @@ export default function ActivityDetail() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const preloadRef = useRef<{ tiltCanvas: OffscreenCanvas; coords: Array<{x:number;y:number}> } | null>(null);
+  const preloadRef = useRef<{
+    tiltCanvas: OffscreenCanvas;
+    coords: Array<{x:number; y:number; flatY:number; ele:number}>;
+    hasElev: boolean;
+  } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renaming_busy, setRenamingBusy] = useState(false);
@@ -206,10 +210,10 @@ export default function ActivityDetail() {
     }
   };
 
-  // ── Preload tile + perspective transform ────────────────────────────────────
+  // ── Preload tile + perspective + elevation transform ────────────────────────
   useEffect(() => {
     if (!activity) return;
-    const pts = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
+    const pts = (activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? [];
     if (pts.length < 2) return;
     preloadRef.current = null;
     const W = 1080, H = 1920, MAP_H = Math.round(H * 0.72);
@@ -282,16 +286,26 @@ export default function ActivityDetail() {
       vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
       tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
 
-      // Transform coordinates with matching perspective
-      const perspCoords = pts.map(p => {
+      // Elevation data
+      const elevs = pts.map(p => p.ele ?? 0);
+      const minEle = Math.min(...elevs), maxEle = Math.max(...elevs);
+      const eleRange = maxEle - minEle;
+      const hasElev = eleRange > 1;
+      const MAX_ELEV_PX = 180; // max height in canvas pixels above flat surface
+
+      // Transform coordinates with matching perspective + elevation lift
+      const perspCoords = pts.map((p, i) => {
         const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
         const frac = cy / MAP_H;
         const scale = 0.58 + 0.42 * frac;
         const ox = (W * (1 - scale)) / 2;
-        return { x: ox + cx * scale, y: cy };
+        const px = ox + cx * scale;
+        const flatY = cy;
+        const elevOffset = hasElev ? ((elevs[i] - minEle) / eleRange) * MAX_ELEV_PX : 0;
+        return { x: px, y: flatY - elevOffset, flatY, ele: elevs[i] };
       });
 
-      preloadRef.current = { tiltCanvas: tilt, coords: perspCoords };
+      preloadRef.current = { tiltCanvas: tilt, coords: perspCoords, hasElev };
     });
   }, [activity?.id]);
 
@@ -302,7 +316,7 @@ export default function ActivityDetail() {
 
   const handleCreateReel = async () => {
     if (!activity) return;
-    const points = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
+    const points = (activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? [];
     if (points.length < 2) return;
 
     setReelState("recording");
@@ -351,9 +365,16 @@ export default function ActivityDetail() {
     const toCanvasY = (lat: number) => mapOffY + (lat2t(lat, zoom) - ty0) * TILE_PX * tileScale;
     const coords = points.map(p => ({ x: toCanvasX(p.lon), y: toCanvasY(p.lat) }));
 
+    // ── Elevation ────────────────────────────────────────────────────────────
+    const elevs = points.map(p => p.ele ?? 0);
+    const minEle = Math.min(...elevs), maxEle = Math.max(...elevs);
+    const eleRange = maxEle - minEle;
+    const hasElev = eleRange > 1;
+    const MAX_ELEV_PX = 180;
+
     // ── Usa mappa precaricata (o carica al momento) ──────────────────────────
     let tiltCanvas: OffscreenCanvas;
-    let perspCoords = coords;
+    let perspCoords: Array<{x:number; y:number; flatY:number; ele:number}> = [];
 
     if (preloadRef.current) {
       tiltCanvas = preloadRef.current.tiltCanvas;
@@ -401,11 +422,14 @@ export default function ActivityDetail() {
       vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
       tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
 
-      perspCoords = points.map(p => {
+      perspCoords = points.map((p, i) => {
         const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
         const scale = 0.58 + 0.42 * (cy / MAP_H);
         const ox = (W * (1 - scale)) / 2;
-        return { x: ox + cx * scale, y: cy };
+        const px = ox + cx * scale;
+        const flatY = cy;
+        const elevOffset = hasElev ? ((elevs[i] - minEle) / eleRange) * MAX_ELEV_PX : 0;
+        return { x: px, y: flatY - elevOffset, flatY, ele: elevs[i] };
       });
     }
 
@@ -503,11 +527,22 @@ export default function ActivityDetail() {
     };
 
     const drawGhost = () => {
+      // Shadow on flat surface (dashed)
       ctx.save();
-      ctx.strokeStyle = "rgba(225,29,72,0.38)";
+      ctx.strokeStyle = "rgba(0,0,0,0.18)";
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.setLineDash([10, 18]);
+      ctx.beginPath();
+      perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.flatY) : ctx.lineTo(c.x, c.flatY));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      // Elevated ghost route
+      ctx.save();
+      ctx.strokeStyle = "rgba(225,29,72,0.22)";
       ctx.lineWidth = 8;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
       ctx.beginPath();
       perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
       ctx.stroke();
@@ -517,19 +552,84 @@ export default function ActivityDetail() {
     const drawProgress = (upTo: number) => {
       if (upTo < 2) return;
       const sub = perspCoords.slice(0, upTo);
-      const stroke = (width: number, color: string, blur: number) => {
-        ctx.save();
-        ctx.shadowBlur = blur; ctx.shadowColor = "#E11D48";
-        ctx.strokeStyle = color; ctx.lineWidth = width;
-        ctx.lineJoin = "round"; ctx.lineCap = "round";
+
+      // ── Wall quads: filled polygon from flatY up to elevated y ───────────────
+      for (let i = 1; i < sub.length; i++) {
+        const a = sub[i - 1], b = sub[i];
+        if (a.flatY === a.y && b.flatY === b.y) continue; // no elevation, skip
+        const wallGrad = ctx.createLinearGradient(a.x, Math.min(a.y, b.y), a.x, Math.max(a.flatY, b.flatY));
+        wallGrad.addColorStop(0, "rgba(225,29,72,0.55)");
+        wallGrad.addColorStop(1, "rgba(80,0,20,0.05)");
         ctx.beginPath();
-        sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
-        ctx.stroke();
-        ctx.restore();
+        ctx.moveTo(a.x, a.flatY);
+        ctx.lineTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(b.x, b.flatY);
+        ctx.closePath();
+        ctx.fillStyle = wallGrad;
+        ctx.fill();
+      }
+
+      // ── Floor shadow line ────────────────────────────────────────────────────
+      ctx.save();
+      ctx.strokeStyle = "rgba(0,0,0,0.12)";
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.flatY) : ctx.lineTo(c.x, c.flatY));
+      ctx.stroke();
+      ctx.restore();
+
+      // ── Elevated route (glow + white core) ──────────────────────────────────
+      // Outer glow
+      ctx.save();
+      ctx.shadowBlur = 44; ctx.shadowColor = "#E11D48";
+      ctx.strokeStyle = "rgba(225,29,72,0.32)"; ctx.lineWidth = 24;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
+      ctx.stroke();
+      ctx.restore();
+
+      // Elevation-colored segments (green→orange→red by normalized elevation)
+      const eleMin = perspCoords[0]?.ele ?? 0;
+      const eleMax = perspCoords[perspCoords.length - 1]?.ele ?? 0;
+      const allEles = perspCoords.map(c => c.ele);
+      const globalMinEle = Math.min(...allEles), globalMaxEle = Math.max(...allEles);
+      const globalEleRange = globalMaxEle - globalMinEle || 1;
+      const eleColor = (e: number) => {
+        const t = (e - globalMinEle) / globalEleRange;
+        if (t < 0.5) {
+          const r = Math.round(52 + (255 - 52) * (t * 2));
+          const g = Math.round(211 - (211 - 100) * (t * 2));
+          return `rgb(${r},${g},50)`;
+        }
+        const r = 255, g = Math.round(100 * (1 - (t - 0.5) * 2));
+        return `rgb(${r},${g},30)`;
       };
-      stroke(28, "rgba(225,29,72,0.35)", 50);
-      stroke(14, "#E11D48", 22);
-      stroke(4, "rgba(255,255,255,0.65)", 0);
+      void eleMin; void eleMax; // suppress unused warning
+      ctx.save();
+      ctx.lineWidth = 12; ctx.lineJoin = "round"; ctx.lineCap = "round";
+      for (let i = 1; i < sub.length; i++) {
+        const a = sub[i - 1], b = sub[i];
+        const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        grad.addColorStop(0, eleColor(a.ele));
+        grad.addColorStop(1, eleColor(b.ele));
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = grad;
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // White core
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.65)"; ctx.lineWidth = 3.5;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
+      ctx.stroke();
+      ctx.restore();
     };
 
     const drawRunner = (frameN: number, upTo: number) => {
@@ -551,7 +651,7 @@ export default function ActivityDetail() {
       ctx.restore();
     };
 
-    const drawStats = (rawT: number) => {
+    const drawStats = (rawT: number, upTo: number) => {
       ctx.fillStyle = "#0a0a0a";
       ctx.fillRect(0, STATS_Y, W, H - STATS_Y);
       ctx.fillStyle = "#E11D48";
@@ -581,13 +681,45 @@ export default function ActivityDetail() {
       card(60, STATS_Y + 210, 455, 120, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
       card(565, STATS_Y + 210, 455, 120, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
       card(60, STATS_Y + 350, 455, 120, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
-      card(565, STATS_Y + 350, 455, 120, `+${Math.round(activity.elevationGainM ?? 0)} m`, "dislivello");
+      // Elevation: show current altitude if available, else gain
+      const curEle = perspCoords[Math.min(upTo - 1, perspCoords.length - 1)]?.ele ?? 0;
+      const hasEleData = perspCoords.some(c => c.ele > 0);
+      card(565, STATS_Y + 350, 455, 120,
+        hasEleData ? `${Math.round(curEle)} m` : `+${Math.round(activity.elevationGainM ?? 0)} m`,
+        hasEleData ? "quota" : "dislivello"
+      );
       ctx.globalAlpha = 1;
       // Barra progresso
       ctx.fillStyle = "rgba(255,255,255,0.12)";
       ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, W - 120, 10, 5); ctx.fill();
       ctx.fillStyle = "#E11D48";
       ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, (W - 120) * rawT, 10, 5); ctx.fill();
+
+      // Mini elevation bar (spark line) below progress
+      if (hasEleData && perspCoords.length > 1) {
+        const BAR_X = 60, BAR_W = W - 120, BAR_Y = STATS_Y + 525, BAR_H = 32;
+        const allEles2 = perspCoords.map(c => c.ele);
+        const eMin = Math.min(...allEles2), eMax = Math.max(...allEles2), eRng = eMax - eMin || 1;
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        ctx.beginPath(); ctx.roundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 4); ctx.fill();
+        // Filled area under sparkline
+        ctx.beginPath();
+        perspCoords.forEach((c, i) => {
+          const sx = BAR_X + (i / (perspCoords.length - 1)) * BAR_W;
+          const sy = BAR_Y + BAR_H - ((c.ele - eMin) / eRng) * BAR_H;
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        });
+        ctx.lineTo(BAR_X + BAR_W, BAR_Y + BAR_H); ctx.lineTo(BAR_X, BAR_Y + BAR_H); ctx.closePath();
+        ctx.fillStyle = "rgba(225,29,72,0.55)"; ctx.fill();
+        // Runner position indicator on sparkline
+        const pIdx = Math.min(upTo - 1, perspCoords.length - 1);
+        const sx = BAR_X + (pIdx / (perspCoords.length - 1)) * BAR_W;
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(sx, BAR_Y + BAR_H / 2, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
     };
 
     // ── Animation loop ───────────────────────────────────────────────────────
@@ -602,7 +734,7 @@ export default function ActivityDetail() {
       drawGhost();
       drawProgress(upTo);
       drawRunner(frame, upTo);
-      drawStats(rawT);
+      drawStats(rawT, upTo);
       frame++;
       if (frame < TOTAL_FRAMES) requestAnimationFrame(animate);
       else recorder.stop();
