@@ -124,7 +124,7 @@ export default function ActivityDetail() {
     : "video/webm; codecs=vp9";
   const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
-  const handleCreateReel = () => {
+  const handleCreateReel = async () => {
     if (!activity) return;
     const points = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
     if (points.length < 2) return;
@@ -139,28 +139,71 @@ export default function ActivityDetail() {
     const DURATION_MS = 12000;
     const TOTAL_FRAMES = Math.round((DURATION_MS / 1000) * fps);
 
-    // ── Pre-computazione coordinate ──────────────────────────────────────────
+    // ── Coordinate bounds ────────────────────────────────────────────────────
     const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
     const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-    const routeW = maxLon - minLon || 0.001;
-    const routeH = maxLat - minLat || 0.001;
 
-    // Mantieni aspect ratio del percorso e aggiunge padding
-    const PAD = 0.12;
-    const scaleX = (W * (1 - PAD * 2)) / routeW;
-    const scaleY = (MAP_H * (1 - PAD * 2)) / routeH;
-    const scale = Math.min(scaleX, scaleY);
-    const offX = (W - routeW * scale) / 2;
-    const offY = MAP_H - (MAP_H - routeH * scale) / 2;
+    // ── Tile math (Web Mercator) ─────────────────────────────────────────────
+    const lon2t = (lon: number, z: number) => (lon + 180) / 360 * Math.pow(2, z);
+    const lat2t = (lat: number, z: number) => {
+      const r = lat * Math.PI / 180;
+      return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
+    };
 
-    const toX = (lon: number) => offX + (lon - minLon) * scale;
-    const toY = (lat: number) => offY - (lat - minLat) * scale;
+    // Trova il miglior zoom: route che occupa 4-7 tile per asse
+    let zoom = 12;
+    for (let z = 16; z >= 8; z--) {
+      if (lon2t(maxLon, z) - lon2t(minLon, z) <= 7 &&
+          lat2t(minLat, z) - lat2t(maxLat, z) <= 7) { zoom = z; break; }
+    }
 
-    // Pre-calcola coords screenspace
-    const coords = points.map(p => ({ x: toX(p.lon), y: toY(p.lat) }));
+    // Viewport in tile-space con 0.8 tile di padding
+    const PAD_T = 0.9;
+    const tx0 = lon2t(minLon, zoom) - PAD_T, tx1 = lon2t(maxLon, zoom) + PAD_T;
+    const ty0 = lat2t(maxLat, zoom) - PAD_T, ty1 = lat2t(minLat, zoom) + PAD_T;
 
-    // ── Canvas 2D su elemento nascosto nel DOM ───────────────────────────────
+    // Scala per fare entrare il viewport nel canvas mantenendo aspect ratio
+    const TILE_PX = 256;
+    const vpW = (tx1 - tx0) * TILE_PX, vpH = (ty1 - ty0) * TILE_PX;
+    const tileScale = Math.min(W / vpW, MAP_H / vpH);
+    const mapOffX = (W - vpW * tileScale) / 2;
+    const mapOffY = (MAP_H - vpH * tileScale) / 2;
+
+    const toCanvasX = (lon: number) => mapOffX + (lon2t(lon, zoom) - tx0) * TILE_PX * tileScale;
+    const toCanvasY = (lat: number) => mapOffY + (lat2t(lat, zoom) - ty0) * TILE_PX * tileScale;
+    const coords = points.map(p => ({ x: toCanvasX(p.lon), y: toCanvasY(p.lat) }));
+
+    // ── Precarica tile (CartoCDN Dark, CORS-enabled) ─────────────────────────
+    type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
+    const tileImages: TileImg[] = [];
+    const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
+    const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
+    const maxTileIdx = Math.pow(2, zoom);
+
+    const tilePromises: Promise<void>[] = [];
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      for (let ix = ixMin; ix <= ixMax; ix++) {
+        if (ix < 0 || iy < 0 || ix >= maxTileIdx || iy >= maxTileIdx) continue;
+        const dx = mapOffX + (ix - tx0) * TILE_PX * tileScale;
+        const dy = mapOffY + (iy - ty0) * TILE_PX * tileScale;
+        const dw = TILE_PX * tileScale, dh = TILE_PX * tileScale;
+        tilePromises.push(new Promise<void>(resolve => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
+          img.onerror = () => resolve();
+          img.src = `https://a.basemaps.cartocdn.com/dark_nolabels/${zoom}/${ix}/${iy}.png`;
+        }));
+      }
+    }
+    // Attendi le tile con timeout di 5s (poi si procede con quelle caricate)
+    await Promise.race([
+      Promise.allSettled(tilePromises),
+      new Promise(r => setTimeout(r, 5000)),
+    ]);
+
+    // ── Canvas setup ─────────────────────────────────────────────────────────
     const canvas = canvasRef.current!;
     canvas.width = W;
     canvas.height = H;
@@ -168,7 +211,7 @@ export default function ActivityDetail() {
 
     // ── MediaRecorder ────────────────────────────────────────────────────────
     const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 6_000_000 });
+    const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 8_000_000 });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
@@ -178,27 +221,23 @@ export default function ActivityDetail() {
     };
     recorder.start();
 
-    // ── Helpers UI ───────────────────────────────────────────────────────────
-    const drawBg = () => {
-      // Gradiente scuro stile mappa notturna
-      const grad = ctx.createLinearGradient(0, 0, 0, MAP_H);
-      grad.addColorStop(0, "#0d1117");
-      grad.addColorStop(1, "#111827");
-      ctx.fillStyle = grad;
+    // ── Draw helpers ─────────────────────────────────────────────────────────
+    const drawMapBg = () => {
+      ctx.fillStyle = "#161a1d";   // fallback se tile mancanti
       ctx.fillRect(0, 0, W, MAP_H);
-      // Griglia tenue
-      ctx.strokeStyle = "rgba(255,255,255,0.04)";
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 10; i++) {
-        ctx.beginPath(); ctx.moveTo(i * W / 10, 0); ctx.lineTo(i * W / 10, MAP_H); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0, i * MAP_H / 10); ctx.lineTo(W, i * MAP_H / 10); ctx.stroke();
-      }
+      for (const t of tileImages) ctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
+      // Vignette sui bordi per look cinematico
+      const vg = ctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.3, W / 2, MAP_H / 2, MAP_H * 0.82);
+      vg.addColorStop(0, "rgba(0,0,0,0)");
+      vg.addColorStop(1, "rgba(0,0,0,0.55)");
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, W, MAP_H);
     };
 
-    const drawGhostRoute = () => {
+    const drawGhost = () => {
       ctx.save();
-      ctx.strokeStyle = "rgba(225,29,72,0.28)";
-      ctx.lineWidth = 9;
+      ctx.strokeStyle = "rgba(225,29,72,0.35)";
+      ctx.lineWidth = 8;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.beginPath();
@@ -207,146 +246,94 @@ export default function ActivityDetail() {
       ctx.restore();
     };
 
-    const drawProgressRoute = (upTo: number) => {
+    const drawProgress = (upTo: number) => {
       if (upTo < 2) return;
-      // Strato 1: glow esterno
-      ctx.save();
-      ctx.shadowBlur = 40;
-      ctx.shadowColor = "#E11D48";
-      ctx.strokeStyle = "rgba(225,29,72,0.5)";
-      ctx.lineWidth = 22;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      for (let i = 0; i < upTo; i++) { i === 0 ? ctx.moveTo(coords[i].x, coords[i].y) : ctx.lineTo(coords[i].x, coords[i].y); }
-      ctx.stroke();
-      ctx.restore();
-
-      // Strato 2: traccia principale
-      ctx.save();
-      ctx.shadowBlur = 18;
-      ctx.shadowColor = "#E11D48";
-      ctx.strokeStyle = "#E11D48";
-      ctx.lineWidth = 12;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      for (let i = 0; i < upTo; i++) { i === 0 ? ctx.moveTo(coords[i].x, coords[i].y) : ctx.lineTo(coords[i].x, coords[i].y); }
-      ctx.stroke();
-      ctx.restore();
-
-      // Strato 3: highlight bianco centrale
-      ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.55)";
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      for (let i = 0; i < upTo; i++) { i === 0 ? ctx.moveTo(coords[i].x, coords[i].y) : ctx.lineTo(coords[i].x, coords[i].y); }
-      ctx.stroke();
-      ctx.restore();
+      const sub = coords.slice(0, upTo);
+      const stroke = (width: number, color: string, blur: number) => {
+        ctx.save();
+        ctx.shadowBlur = blur; ctx.shadowColor = "#E11D48";
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath();
+        sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
+        ctx.stroke();
+        ctx.restore();
+      };
+      stroke(28, "rgba(225,29,72,0.35)", 50);  // alone largo
+      stroke(14, "#E11D48", 22);               // traccia principale
+      stroke(4, "rgba(255,255,255,0.65)", 0);  // highlight bianco
     };
 
-    const drawRunner = (frame: number, upTo: number) => {
+    const drawRunner = (frameN: number, upTo: number) => {
       if (upTo < 1 || upTo >= coords.length) return;
       const { x, y } = coords[upTo - 1];
-      // Anello pulse (espande e sfuma)
-      const pulseT = (frame % 20) / 20;
+      const pt = (frameN % 24) / 24;
       ctx.save();
-      ctx.globalAlpha = (1 - pulseT) * 0.6;
-      ctx.beginPath();
-      ctx.arc(x, y, 22 + pulseT * 30, 0, Math.PI * 2);
-      ctx.strokeStyle = "#E11D48";
-      ctx.lineWidth = 3;
-      ctx.stroke();
+      ctx.globalAlpha = (1 - pt) * 0.55;
+      ctx.beginPath(); ctx.arc(x, y, 20 + pt * 32, 0, Math.PI * 2);
+      ctx.strokeStyle = "#E11D48"; ctx.lineWidth = 3; ctx.stroke();
       ctx.restore();
-      // Cerchio bianco esterno
       ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, 20, 0, Math.PI * 2);
-      ctx.fillStyle = "white";
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = "white";
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2);
+      ctx.fillStyle = "white"; ctx.shadowBlur = 12; ctx.shadowColor = "white"; ctx.fill();
       ctx.restore();
-      // Punto rosso interno
       ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, 11, 0, Math.PI * 2);
-      ctx.fillStyle = "#E11D48";
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.fillStyle = "#E11D48"; ctx.fill();
       ctx.restore();
     };
 
-    const drawStats = (progress: number) => {
+    const drawStats = (rawT: number) => {
       ctx.fillStyle = "#0a0a0a";
       ctx.fillRect(0, STATS_Y, W, H - STATS_Y);
-
-      // Separatore
       ctx.fillStyle = "#E11D48";
       ctx.fillRect(0, STATS_Y, W, 4);
 
       ctx.textAlign = "left";
       ctx.fillStyle = "#E11D48";
       ctx.font = "bold 72px Inter,system-ui,sans-serif";
-      ctx.fillText("RunReel", 80, STATS_Y + 106);
+      ctx.fillText("RunReel", 80, STATS_Y + 108);
 
       ctx.fillStyle = "#ffffff";
       ctx.font = "bold 50px Inter,system-ui,sans-serif";
       const name = activity.name.length > 26 ? activity.name.slice(0, 25) + "…" : activity.name;
-      ctx.fillText(name, 80, STATS_Y + 178);
+      ctx.fillText(name, 80, STATS_Y + 180);
 
-      const alpha = Math.min(1, progress * 4);
-      ctx.globalAlpha = alpha;
-
-      const drawCard = (x: number, y: number, cw: number, ch: number, big: string, small: string) => {
+      ctx.globalAlpha = Math.min(1, rawT * 4);
+      const card = (x: number, y: number, cw: number, ch: number, big: string, small: string) => {
         ctx.fillStyle = "rgba(255,255,255,0.10)";
-        ctx.beginPath();
-        ctx.roundRect(x, y, cw, ch, 16);
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 46px Inter,system-ui,sans-serif";
+        ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 16); ctx.fill();
+        ctx.fillStyle = "#fff"; ctx.font = "bold 46px Inter,system-ui,sans-serif";
         ctx.fillText(big, x + 24, y + 66);
-        ctx.fillStyle = "rgba(255,255,255,0.55)";
-        ctx.font = "30px Inter,system-ui,sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.font = "30px Inter,system-ui,sans-serif";
         ctx.fillText(small, x + 24, y + 104);
       };
-
       const pace = activity.avgPaceSecPerKm ?? 0;
       const dur = activity.durationSecs ?? 0;
-      drawCard(60, STATS_Y + 210, 455, 120, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
-      drawCard(565, STATS_Y + 210, 455, 120, `${Math.floor(pace / 60)}:${(pace % 60).toString().padStart(2, "0")}/km`, "passo");
-      drawCard(60, STATS_Y + 350, 455, 120, `${Math.floor(dur / 3600)}h ${Math.floor((dur % 3600) / 60)}'`, "durata");
-      drawCard(565, STATS_Y + 350, 455, 120, `+${Math.round(activity.elevationGainM ?? 0)} m`, "dislivello");
-
-      // Barra progresso in basso
+      card(60, STATS_Y + 210, 455, 120, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
+      card(565, STATS_Y + 210, 455, 120, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
+      card(60, STATS_Y + 350, 455, 120, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
+      card(565, STATS_Y + 350, 455, 120, `+${Math.round(activity.elevationGainM ?? 0)} m`, "dislivello");
       ctx.globalAlpha = 1;
+      // Barra progresso
       ctx.fillStyle = "rgba(255,255,255,0.12)";
-      ctx.beginPath();
-      ctx.roundRect(60, STATS_Y + 500, W - 120, 10, 5);
-      ctx.fill();
+      ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, W - 120, 10, 5); ctx.fill();
       ctx.fillStyle = "#E11D48";
-      ctx.beginPath();
-      ctx.roundRect(60, STATS_Y + 500, (W - 120) * progress, 10, 5);
-      ctx.fill();
+      ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, (W - 120) * rawT, 10, 5); ctx.fill();
     };
 
-    // ── Loop di animazione ───────────────────────────────────────────────────
-    let frame = 0;
-    // Easing: accelera lentamente all'inizio, rallenta alla fine
+    // ── Animation loop ───────────────────────────────────────────────────────
     const ease = (t: number) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    let frame = 0;
 
     const animate = () => {
       const rawT = frame / TOTAL_FRAMES;
-      const progress = ease(rawT);
-      const upTo = Math.max(2, Math.round(progress * (coords.length - 1)) + 1);
-
-      drawBg();
-      drawGhostRoute();
-      drawProgressRoute(upTo);
+      const upTo = Math.max(2, Math.round(ease(rawT) * (coords.length - 1)) + 1);
+      drawMapBg();
+      drawGhost();
+      drawProgress(upTo);
       drawRunner(frame, upTo);
       drawStats(rawT);
-
       frame++;
       if (frame < TOTAL_FRAMES) requestAnimationFrame(animate);
       else recorder.stop();
@@ -394,14 +381,14 @@ export default function ActivityDetail() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={handleCreateReel}
+            onClick={() => handleCreateReel().catch(() => setReelState("idle"))}
             disabled={reelState === "recording"}
             className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center gap-2"
           >
             {reelState === "recording" ? (
               <>
                 <span className="w-3 h-3 rounded-full bg-white animate-pulse inline-block" />
-                Creazione...
+                Registrazione…
               </>
             ) : "Crea Reel"}
           </button>
