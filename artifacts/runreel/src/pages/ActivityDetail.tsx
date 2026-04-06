@@ -193,7 +193,7 @@ export default function ActivityDetail() {
           img.crossOrigin = "anonymous";
           img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
           img.onerror = () => resolve();
-          img.src = `https://a.basemaps.cartocdn.com/dark_nolabels/${zoom}/${ix}/${iy}.png`;
+          img.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${zoom}/${ix}/${iy}.png`;
         }));
       }
     }
@@ -221,22 +221,112 @@ export default function ActivityDetail() {
     };
     recorder.start();
 
+    // ── Generatore di fulmini (stato persistente tra frame) ──────────────────
+    type Bolt = { segs: { x: number; y: number }[]; life: number; maxLife: number; color: string };
+    const activeBolts: Bolt[] = [];
+    let nextBoltIn = Math.floor(Math.random() * 40 + 20); // frame prima del prossimo fulmine
+
+    const makeBolt = (fromX: number, fromY: number): Bolt => {
+      const segs: { x: number; y: number }[] = [{ x: fromX, y: fromY }];
+      let cx = fromX, cy = fromY;
+      const steps = 6 + Math.floor(Math.random() * 6);
+      for (let s = 0; s < steps; s++) {
+        cx += (Math.random() - 0.45) * 130;
+        cy += 60 + Math.random() * 80;
+        segs.push({ x: cx, y: cy });
+      }
+      const maxLife = 6 + Math.floor(Math.random() * 6);
+      return { segs, life: maxLife, maxLife, color: Math.random() > 0.4 ? "#ffffff" : "#a5f3fc" };
+    };
+
     // ── Draw helpers ─────────────────────────────────────────────────────────
     const drawMapBg = () => {
-      ctx.fillStyle = "#161a1d";   // fallback se tile mancanti
+      ctx.fillStyle = "#e8e8e8";   // fallback chiaro se tile non caricate
       ctx.fillRect(0, 0, W, MAP_H);
       for (const t of tileImages) ctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
-      // Vignette sui bordi per look cinematico
-      const vg = ctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.3, W / 2, MAP_H / 2, MAP_H * 0.82);
+      // Vignette leggera — solo ai bordi, al centro la mappa è visibile
+      const vg = ctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.35, W / 2, MAP_H / 2, MAP_H * 0.78);
       vg.addColorStop(0, "rgba(0,0,0,0)");
-      vg.addColorStop(1, "rgba(0,0,0,0.55)");
+      vg.addColorStop(1, "rgba(0,0,0,0.28)");
       ctx.fillStyle = vg;
       ctx.fillRect(0, 0, W, MAP_H);
     };
 
+    const drawPattern = () => {
+      // Righe diagonali stile maglietta sportiva
+      ctx.save();
+      ctx.globalAlpha = 0.065;
+      ctx.strokeStyle = "#E11D48";
+      ctx.lineWidth = 18;
+      for (let d = -MAP_H; d < W + MAP_H; d += 90) {
+        ctx.beginPath();
+        ctx.moveTo(d, 0);
+        ctx.lineTo(d + MAP_H, MAP_H);
+        ctx.stroke();
+      }
+      // Seconda serie più sottile in bianco
+      ctx.globalAlpha = 0.04;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 6;
+      for (let d = -MAP_H + 45; d < W + MAP_H; d += 90) {
+        ctx.beginPath();
+        ctx.moveTo(d, 0);
+        ctx.lineTo(d + MAP_H, MAP_H);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+
+    const drawBolts = (frameN: number) => {
+      // Crea nuovi fulmini
+      nextBoltIn--;
+      if (nextBoltIn <= 0) {
+        const bx = 100 + Math.random() * (W - 200);
+        activeBolts.push(makeBolt(bx, Math.random() * MAP_H * 0.3));
+        // A volte due fulmini ravvicinati
+        if (Math.random() > 0.6) activeBolts.push(makeBolt(bx + (Math.random() - 0.5) * 200, Math.random() * MAP_H * 0.25));
+        nextBoltIn = Math.floor(Math.random() * 55 + 25);
+      }
+      // Disegna e decade
+      for (let i = activeBolts.length - 1; i >= 0; i--) {
+        const b = activeBolts[i];
+        const alpha = b.life / b.maxLife;
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.9;
+        ctx.shadowBlur = 22; ctx.shadowColor = b.color;
+        ctx.strokeStyle = b.color; ctx.lineWidth = alpha > 0.5 ? 3 : 1.5;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath();
+        b.segs.forEach((s, idx) => idx === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y));
+        ctx.stroke();
+        // Branche secondarie (1-2)
+        if (b.segs.length > 3) {
+          const midIdx = Math.floor(b.segs.length / 2);
+          ctx.globalAlpha = alpha * 0.55;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(b.segs[midIdx].x, b.segs[midIdx].y);
+          ctx.lineTo(b.segs[midIdx].x + (Math.random() - 0.5) * 100, b.segs[midIdx].y + 80);
+          ctx.stroke();
+        }
+        ctx.restore();
+        // Flash di luce bianca al primo frame
+        if (b.life === b.maxLife) {
+          ctx.save();
+          ctx.globalAlpha = 0.12;
+          ctx.fillStyle = "white";
+          ctx.fillRect(0, 0, W, MAP_H);
+          ctx.restore();
+        }
+        b.life--;
+        if (b.life <= 0) activeBolts.splice(i, 1);
+      }
+      void frameN;
+    };
+
     const drawGhost = () => {
       ctx.save();
-      ctx.strokeStyle = "rgba(225,29,72,0.35)";
+      ctx.strokeStyle = "rgba(225,29,72,0.38)";
       ctx.lineWidth = 8;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
@@ -259,9 +349,9 @@ export default function ActivityDetail() {
         ctx.stroke();
         ctx.restore();
       };
-      stroke(28, "rgba(225,29,72,0.35)", 50);  // alone largo
-      stroke(14, "#E11D48", 22);               // traccia principale
-      stroke(4, "rgba(255,255,255,0.65)", 0);  // highlight bianco
+      stroke(28, "rgba(225,29,72,0.35)", 50);
+      stroke(14, "#E11D48", 22);
+      stroke(4, "rgba(255,255,255,0.65)", 0);
     };
 
     const drawRunner = (frameN: number, upTo: number) => {
@@ -330,6 +420,8 @@ export default function ActivityDetail() {
       const rawT = frame / TOTAL_FRAMES;
       const upTo = Math.max(2, Math.round(ease(rawT) * (coords.length - 1)) + 1);
       drawMapBg();
+      drawPattern();
+      drawBolts(frame);
       drawGhost();
       drawProgress(upTo);
       drawRunner(frame, upTo);

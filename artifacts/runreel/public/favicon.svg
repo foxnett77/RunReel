@@ -1,3 +1,19 @@
-<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="180" height="180" rx="36" fill="#FF3C00"/>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="96" fill="#E11D48"/>
+  <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#grad)"/>
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF2D55"/>
+      <stop offset="100%" stop-color="#C0122E"/>
+    </linearGradient>
+  </defs>
+  <!-- Diagonal speed lines -->
+  <line x1="-20" y1="340" x2="340" y2="-20" stroke="rgba(255,255,255,0.08)" stroke-width="60"/>
+  <line x1="80" y1="440" x2="440" y2="80" stroke="rgba(255,255,255,0.06)" stroke-width="40"/>
+  <!-- R -->
+  <text x="80" y="390" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="320" fill="white" letter-spacing="-20">R</text>
+  <!-- Play triangle (reel symbol) -->
+  <polygon points="308,210 308,330 400,270" fill="rgba(255,255,255,0.9)"/>
+  <!-- Small "reel" text at bottom -->
+<text x="256" y="475" font-family="Arial,sans-serif" font-weight="700" font-size="72" text-anchor="middle" fill="rgba(255,255,255,0.75)" letter-spacing="18">REEL</text>
 </svg>
