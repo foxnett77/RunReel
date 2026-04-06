@@ -2,7 +2,7 @@ import { useParams, useLocation } from "wouter";
 import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetStatsSummaryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMap3D";
 
 // Lazy load Leaflet only in browser
@@ -54,43 +54,104 @@ function MapView({ points }: { points: Array<{ lat: number; lon: number }> }) {
   return <div ref={mapRef} className="w-full h-full" />;
 }
 
-function ElevationChart({ points }: { points: Array<{ ele?: number }> }) {
-  const withEle = points.filter((p) => p.ele != null);
+function ElevationChart({ points }: { points: Array<{ lat: number; lon: number; ele?: number }> }) {
+  const withEle = (points.filter((p) => p.ele != null && p.lat != null && p.lon != null)) as Array<{ lat: number; lon: number; ele: number }>;
   if (withEle.length < 2) return null;
 
-  const elevations = withEle.map((p) => p.ele!);
-  const min = Math.min(...elevations);
-  const max = Math.max(...elevations);
-  const range = max - min || 1;
+  const toRad = (d: number) => d * Math.PI / 180;
+  const haversine = (a: { lat: number; lon: number }, b: { lat: number; lon: number }) => {
+    const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
+    const x = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * 6371000 * Math.asin(Math.sqrt(x));
+  };
+  const cumDist: number[] = [0];
+  for (let i = 1; i < withEle.length; i++) cumDist.push(cumDist[i - 1] + haversine(withEle[i - 1], withEle[i]));
+  const totalDistM = cumDist[cumDist.length - 1];
+  const totalDistKm = totalDistM / 1000;
 
-  const width = 400;
-  const height = 80;
-  const step = width / (withEle.length - 1);
+  const elevations = withEle.map((p) => p.ele);
+  const minEle = Math.min(...elevations), maxEle = Math.max(...elevations);
+  const rangeEle = maxEle - minEle || 1;
 
-  const pathPoints = withEle.map((p, i) => {
-    const x = i * step;
-    const y = height - ((p.ele! - min) / range) * height;
-    return `${x},${y}`;
-  });
+  let gain = 0, loss = 0;
+  for (let i = 1; i < elevations.length; i++) {
+    const d = elevations[i] - elevations[i - 1];
+    if (d > 0) gain += d; else loss += Math.abs(d);
+  }
 
-  const pathD = `M${pathPoints.join(" L")} L${width},${height} L0,${height} Z`;
+  const W = 400, H = 100;
+  const pts = withEle.map((p, i) => ({
+    x: (cumDist[i] / totalDistM) * W,
+    y: H - ((p.ele - minEle) / rangeEle) * (H - 4),
+  }));
+  const fillD = `M${pts.map(p => `${p.x},${p.y}`).join(" L")} L${W},${H} L0,${H} Z`;
+  const lineD = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const onMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetDist = ratio * totalDistM;
+    let best = 0;
+    for (let i = 1; i < cumDist.length; i++) {
+      if (Math.abs(cumDist[i] - targetDist) < Math.abs(cumDist[best] - targetDist)) best = i;
+    }
+    setHoverIdx(best);
+  }, [cumDist, totalDistM]);
+
+  const hp = hoverIdx != null ? pts[hoverIdx] : null;
+  const hpRatio = hoverIdx != null ? cumDist[hoverIdx] / totalDistM : null;
 
   return (
     <div className="bg-white border border-border rounded-xl p-4">
-      <div className="text-sm font-semibold text-muted-foreground mb-3">Profilo altimetrico</div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-20" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="elev-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#E11D48" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#E11D48" stopOpacity="0.05" />
-          </linearGradient>
-        </defs>
-        <path d={pathD} fill="url(#elev-grad)" />
-        <polyline points={pathPoints.join(" ")} fill="none" stroke="#E11D48" strokeWidth="2" />
-      </svg>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-sm font-semibold text-muted-foreground">Profilo altimetrico</div>
+        <div className="flex gap-3 text-xs font-semibold">
+          <span className="text-emerald-600">↑ {Math.round(gain)}m</span>
+          <span className="text-rose-500">↓ {Math.round(loss)}m</span>
+          <span className="text-muted-foreground">{Math.round(minEle)}–{Math.round(maxEle)}m</span>
+        </div>
+      </div>
+      <div className="relative pt-8">
+        {hp && hpRatio != null && (
+          <div
+            className="absolute top-0 bg-foreground text-background rounded-md px-2 py-0.5 text-xs font-semibold pointer-events-none whitespace-nowrap shadow z-10"
+            style={{ left: `${hpRatio * 100}%`, transform: "translateX(-50%)" }}
+          >
+            {(cumDist[hoverIdx!] / 1000).toFixed(2)} km · {Math.round(withEle[hoverIdx!].ele)}m
+          </div>
+        )}
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full h-28 cursor-crosshair"
+          preserveAspectRatio="none"
+          onMouseMove={onMouseMove}
+          onMouseLeave={() => setHoverIdx(null)}
+        >
+          <defs>
+            <linearGradient id="elev-grad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#E11D48" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#E11D48" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          <path d={fillD} fill="url(#elev-grad)" />
+          <path d={lineD} fill="none" stroke="#E11D48" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+          {hp && (
+            <>
+              <line x1={hp.x} y1={0} x2={hp.x} y2={H} stroke="#E11D48" strokeWidth="1" strokeDasharray="4,3" opacity="0.55" />
+              <circle cx={hp.x} cy={hp.y} r="4.5" fill="#E11D48" stroke="white" strokeWidth="2" />
+            </>
+          )}
+        </svg>
+      </div>
       <div className="flex justify-between text-xs text-muted-foreground mt-1">
-        <span>Min: {Math.round(min)}m</span>
-        <span>Max: {Math.round(max)}m</span>
+        <span>0 km</span>
+        <span>{(totalDistKm / 2).toFixed(1)} km</span>
+        <span>{totalDistKm.toFixed(2)} km</span>
       </div>
     </div>
   );
@@ -104,8 +165,10 @@ export default function ActivityDetail() {
   const deleteActivity = useDeleteActivity();
   const [reelState, setReelState] = useState<"idle" | "recording" | "done">("idle");
   const [reelUrl, setReelUrl] = useState<string | null>(null);
+  const [reelQuality, setReelQuality] = useState<"standard" | "alta">("standard");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const { data: activity, isLoading, error } = useGetActivity(id, {
     query: { enabled: !!id },
@@ -133,11 +196,12 @@ export default function ActivityDetail() {
     setReelUrl(null);
 
     const W = 1080, H = 1920;
-    const MAP_H = Math.round(H * 0.72);  // 1382px — mappa
+    const MAP_H = Math.round(H * 0.72);
     const STATS_Y = MAP_H;
     const fps = 30;
-    const DURATION_MS = 12000;
+    const DURATION_MS = reelQuality === "alta" ? 15000 : 12000;
     const TOTAL_FRAMES = Math.round((DURATION_MS / 1000) * fps);
+    const BITRATE = reelQuality === "alta" ? 14_000_000 : 8_000_000;
 
     // ── Coordinate bounds ────────────────────────────────────────────────────
     const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
@@ -266,7 +330,7 @@ export default function ActivityDetail() {
     const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
     if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
     const combinedStream = new MediaStream(tracks);
-    const recorder = new MediaRecorder(combinedStream, { mimeType: reelMimeType, videoBitsPerSecond: 8_000_000 });
+    const recorder = new MediaRecorder(combinedStream, { mimeType: reelMimeType, videoBitsPerSecond: BITRATE });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
@@ -527,38 +591,93 @@ export default function ActivityDetail() {
           </div>
           <h1 className="text-2xl font-black">{activity.name}</h1>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => handleCreateReel().catch(() => setReelState("idle"))}
-            disabled={reelState === "recording"}
-            className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center gap-2"
-          >
-            {reelState === "recording" ? (
-              <>
-                <span className="w-3 h-3 rounded-full bg-white animate-pulse inline-block" />
-                Registrazione…
-              </>
-            ) : "Crea Reel"}
-          </button>
-          <button
-            onClick={handleDelete}
-            className="px-3 py-2 border border-border rounded-lg text-sm text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
-          >
-            Elimina
-          </button>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            {/* Qualità */}
+            <div className="flex border border-border rounded-lg overflow-hidden text-xs font-semibold">
+              {(["standard", "alta"] as const).map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setReelQuality(q)}
+                  disabled={reelState === "recording"}
+                  className={`px-3 py-2 transition-colors ${reelQuality === q ? "bg-primary text-white" : "bg-white text-muted-foreground hover:bg-muted"}`}
+                >
+                  {q === "standard" ? "12s" : "HD 15s"}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => handleCreateReel().catch(() => setReelState("idle"))}
+              disabled={reelState === "recording"}
+              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center gap-2"
+            >
+              {reelState === "recording" ? (
+                <>
+                  <span className="w-3 h-3 rounded-full bg-white animate-pulse inline-block" />
+                  Registrazione…
+                </>
+              ) : "Crea Reel"}
+            </button>
+            <button
+              onClick={handleDelete}
+              className="px-3 py-2 border border-border rounded-lg text-sm text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
+            >
+              Elimina
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {reelQuality === "standard" ? "Standard · 8 Mbps · 12 sec" : "Alta qualità · 14 Mbps · 15 sec"}
+          </p>
         </div>
       </div>
 
-      {/* Reel download */}
+      {/* Reel pronto — anteprima + download */}
       {reelState === "done" && reelUrl && (
         <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 mb-6">
-          <div className="flex items-center gap-4 mb-3">
+          <div className="flex items-center gap-3 mb-4">
             <div className="text-2xl">🎬</div>
-            <div className="flex-1">
+            <div>
               <p className="font-semibold text-foreground">Reel pronto!</p>
-              <p className="text-sm text-muted-foreground">Il tuo video è stato creato.</p>
+              <p className="text-sm text-muted-foreground">Guarda l'anteprima e poi scarica o condividi.</p>
             </div>
           </div>
+
+          {/* Anteprima video stile phone */}
+          <div className="flex justify-center mb-5">
+            <div className="relative" style={{ width: 160 }}>
+              {/* Cornice telefono */}
+              <div className="absolute inset-0 rounded-[22px] border-[5px] border-zinc-800 shadow-2xl pointer-events-none z-10" />
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-zinc-800 rounded-b-lg z-20" />
+              <video
+                ref={videoRef}
+                src={reelUrl}
+                autoPlay
+                loop
+                playsInline
+                muted
+                className="w-full rounded-[17px] block bg-black"
+                style={{ aspectRatio: "9/16" }}
+              />
+              {/* Pulsante play/pausa sopra il video */}
+              <button
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (!v) return;
+                  v.paused ? v.play() : v.pause();
+                }}
+                className="absolute inset-0 flex items-center justify-center rounded-[17px] bg-black/0 hover:bg-black/20 transition-colors z-10 group"
+                aria-label="Pausa/Riproduci"
+              >
+                <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 rounded-full p-3">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Bottoni azione */}
           <div className="flex flex-wrap gap-2">
             {typeof navigator.share === "function" && (
               <button
@@ -574,10 +693,9 @@ export default function ActivityDetail() {
                 className="flex-1 px-4 py-2.5 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2v13M8 7l4-5 4 5"/>
-                  <path d="M20 21H4"/>
+                  <path d="M12 2v13M8 7l4-5 4 5" /><path d="M20 21H4" />
                 </svg>
-                Salva in Foto
+                Condividi
               </button>
             )}
             <a
@@ -586,22 +704,14 @@ export default function ActivityDetail() {
               className="flex-1 px-4 py-2.5 border border-border rounded-lg text-sm font-semibold hover:bg-muted transition-colors flex items-center justify-center gap-2"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2v13M8 11l4 4 4-4"/>
-                <path d="M20 21H4"/>
+                <path d="M12 2v13M8 11l4 4 4-4" /><path d="M20 21H4" />
               </svg>
-              Scarica
+              Scarica {reelExtension.toUpperCase()}
             </a>
           </div>
-          {reelExtension === "mp4" && (
-            <p className="text-xs text-muted-foreground mt-2.5">
-              Tocca <strong>Salva in Foto</strong> → il sistema ti chiederà dove salvarlo → scegli <strong>Foto</strong> per aggiungerlo alla libreria.
-            </p>
-          )}
-          {reelExtension === "webm" && (
-            <p className="text-xs text-muted-foreground mt-2.5">
-              Su Android tocca <strong>Salva in Foto</strong> per salvarlo direttamente nella galleria.
-            </p>
-          )}
+          <p className="text-xs text-muted-foreground mt-2">
+            {reelQuality === "alta" ? "Alta qualità · 14 Mbps · 15 sec" : "Standard · 8 Mbps · 12 sec"}
+          </p>
         </div>
       )}
 
