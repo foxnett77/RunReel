@@ -1,6 +1,7 @@
 import { Link } from "wouter";
 import { useListActivities, useGetStatsSummary } from "@workspace/api-client-react";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
+import { useLang } from "@/lib/i18n";
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -14,6 +15,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
 export default function Home() {
   const { data: activities, isLoading: loadingActs } = useListActivities();
   const { data: stats, isLoading: loadingStats } = useGetStatsSummary();
+  const { t } = useLang();
 
   const recent = activities?.slice(0, 5) ?? [];
 
@@ -26,16 +28,16 @@ export default function Home() {
         />
         <div className="relative">
           <h1 className="text-4xl font-black mb-2">RunReel</h1>
-          <p className="text-white/80 text-lg mb-6">La tua striscia di attivita personali.</p>
+          <p className="text-white/80 text-lg mb-6">{t("hero_subtitle")}</p>
           <div className="flex gap-3 flex-wrap">
             <Link href="/live">
               <span className="inline-flex items-center gap-2 px-5 py-2.5 bg-white text-primary rounded-lg font-bold text-sm hover:bg-white/90 transition-colors cursor-pointer">
-                Avvia Live
+                {t("start_live")}
               </span>
             </Link>
             <Link href="/upload">
               <span className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/20 text-white rounded-lg font-bold text-sm hover:bg-white/30 transition-colors cursor-pointer border border-white/30">
-                Carica GPX
+                {t("upload_gpx")}
               </span>
             </Link>
           </div>
@@ -51,19 +53,19 @@ export default function Home() {
         </div>
       ) : stats ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <StatCard label="Attivita totali" value={String(stats.totalActivities)} />
-          <StatCard label="Distanza totale" value={formatDistance(stats.totalDistanceKm)} />
-          <StatCard label="Tempo totale" value={formatDuration(stats.totalDurationSecs)} />
-          <StatCard label="Miglior passo" value={formatPace(stats.bestPaceSecPerKm ?? 0) + " /km"} />
+          <StatCard label={t("stat_total_activities")} value={String(stats.totalActivities)} />
+          <StatCard label={t("stat_total_distance")} value={formatDistance(stats.totalDistanceKm)} />
+          <StatCard label={t("stat_total_time")} value={formatDuration(stats.totalDurationSecs)} />
+          <StatCard label={t("stat_best_pace")} value={formatPace(stats.bestPaceSecPerKm ?? 0) + " /km"} />
         </div>
       ) : null}
 
       {/* Recent activities */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold">Attivita recenti</h2>
+          <h2 className="text-lg font-bold">{t("recent_activities")}</h2>
           <Link href="/activities">
-            <span className="text-sm text-primary font-semibold hover:underline cursor-pointer">Vedi tutte</span>
+            <span className="text-sm text-primary font-semibold hover:underline cursor-pointer">{t("view_all")}</span>
           </Link>
         </div>
 
@@ -76,8 +78,8 @@ export default function Home() {
         ) : recent.length === 0 ? (
           <div className="text-center py-16 bg-muted/30 rounded-xl border border-dashed border-border">
             <div className="text-4xl mb-3">🏃</div>
-            <p className="font-semibold text-foreground mb-1">Nessuna attivita ancora</p>
-            <p className="text-sm text-muted-foreground">Carica un file GPX o avvia il tracciamento live per iniziare.</p>
+            <p className="font-semibold text-foreground mb-1">{t("no_activities")}</p>
+            <p className="text-sm text-muted-foreground">{t("upload_first")}</p>
           </div>
         ) : (
           <div className="space-y-3">

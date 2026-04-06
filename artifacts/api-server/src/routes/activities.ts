@@ -6,6 +6,10 @@ import {
   GetActivityParams,
   DeleteActivityParams,
 } from "@workspace/api-zod";
+import { z } from "zod";
+
+const PatchActivityBody = z.object({ name: z.string().min(1) });
+const PatchActivityParams = z.object({ id: z.number().int().positive() });
 
 const router: IRouter = Router();
 
@@ -99,6 +103,23 @@ router.get("/activities/:id", async (req, res): Promise<void> => {
   }
 
   res.json(activity);
+});
+
+router.patch("/activities/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = PatchActivityParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
+  const body = PatchActivityBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+
+  const [updated] = await db
+    .update(activitiesTable)
+    .set({ name: body.data.name })
+    .where(eq(activitiesTable.id, params.data.id))
+    .returning();
+
+  if (!updated) { res.status(404).json({ error: "Activity not found" }); return; }
+  res.json(updated);
 });
 
 router.delete("/activities/:id", async (req, res): Promise<void> => {

@@ -1,9 +1,10 @@
 import { useParams, useLocation } from "wouter";
-import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetStatsSummaryQueryKey } from "@workspace/api-client-react";
+import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetStatsSummaryQueryKey, getGetActivityQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
 import { useEffect, useRef, useState, useCallback } from "react";
 import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMap3D";
+import { useLang } from "@/lib/i18n";
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -163,24 +164,136 @@ export default function ActivityDetail() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const deleteActivity = useDeleteActivity();
+  const { t } = useLang();
   const [reelState, setReelState] = useState<"idle" | "recording" | "done">("idle");
   const [reelUrl, setReelUrl] = useState<string | null>(null);
   const [reelQuality, setReelQuality] = useState<"standard" | "alta">("standard");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const preloadRef = useRef<{ tiltCanvas: OffscreenCanvas; coords: Array<{x:number;y:number}> } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming_busy, setRenamingBusy] = useState(false);
 
   const { data: activity, isLoading, error } = useGetActivity(id, {
     query: { enabled: !!id },
   });
 
   const handleDelete = async () => {
-    if (!confirm("Eliminare questa attivita?")) return;
+    if (!confirm(t("detail_delete_confirm"))) return;
     await deleteActivity.mutateAsync({ id });
     queryClient.invalidateQueries({ queryKey: getListActivitiesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getGetStatsSummaryQueryKey() });
     navigate("/activities");
   };
+
+  const handleRename = async () => {
+    const name = renameValue.trim();
+    if (!name || name === activity?.name) { setRenaming(false); return; }
+    setRenamingBusy(true);
+    try {
+      await fetch(`/api/activities/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      queryClient.invalidateQueries({ queryKey: getListActivitiesQueryKey() });
+      await queryClient.invalidateQueries({ queryKey: getGetActivityQueryKey(id) });
+    } finally {
+      setRenamingBusy(false);
+      setRenaming(false);
+    }
+  };
+
+  // ── Preload tile + perspective transform ────────────────────────────────────
+  useEffect(() => {
+    if (!activity) return;
+    const pts = (activity.points as Array<{ lat: number; lon: number }>) ?? [];
+    if (pts.length < 2) return;
+    preloadRef.current = null;
+    const W = 1080, H = 1920, MAP_H = Math.round(H * 0.72);
+    const lon2t = (lon: number, z: number) => (lon + 180) / 360 * Math.pow(2, z);
+    const lat2t = (lat: number, z: number) => {
+      const r = lat * Math.PI / 180;
+      return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
+    };
+    const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+    let zoom = 12;
+    for (let z = 16; z >= 8; z--) {
+      if (lon2t(maxLon, z) - lon2t(minLon, z) <= 7 &&
+          lat2t(minLat, z) - lat2t(maxLat, z) <= 7) { zoom = z; break; }
+    }
+    const PAD_T = 0.9;
+    const tx0 = lon2t(minLon, zoom) - PAD_T, tx1 = lon2t(maxLon, zoom) + PAD_T;
+    const ty0 = lat2t(maxLat, zoom) - PAD_T, ty1 = lat2t(minLat, zoom) + PAD_T;
+    const TILE_PX = 256;
+    const vpW = (tx1 - tx0) * TILE_PX, vpH = (ty1 - ty0) * TILE_PX;
+    const tileScale = Math.min(W / vpW, MAP_H / vpH);
+    const mapOffX = (W - vpW * tileScale) / 2, mapOffY = (MAP_H - vpH * tileScale) / 2;
+    const toCanvasX = (lon: number) => mapOffX + (lon2t(lon, zoom) - tx0) * TILE_PX * tileScale;
+    const toCanvasY = (lat: number) => mapOffY + (lat2t(lat, zoom) - ty0) * TILE_PX * tileScale;
+
+    type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
+    const tileImages: TileImg[] = [];
+    const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
+    const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
+    const maxTileIdx = Math.pow(2, zoom);
+    const tilePromises: Promise<void>[] = [];
+    for (let iy = iyMin; iy <= iyMax; iy++) {
+      for (let ix = ixMin; ix <= ixMax; ix++) {
+        if (ix < 0 || iy < 0 || ix >= maxTileIdx || iy >= maxTileIdx) continue;
+        const dx = mapOffX + (ix - tx0) * TILE_PX * tileScale;
+        const dy = mapOffY + (iy - ty0) * TILE_PX * tileScale;
+        const dw = TILE_PX * tileScale, dh = TILE_PX * tileScale;
+        tilePromises.push(new Promise<void>(resolve => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
+          img.onerror = () => resolve();
+          img.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${zoom}/${ix}/${iy}.png`;
+        }));
+      }
+    }
+    Promise.race([Promise.allSettled(tilePromises), new Promise(r => setTimeout(r, 5000))]).then(() => {
+      // Flat map canvas
+      const flat = new OffscreenCanvas(W, MAP_H);
+      const fctx = flat.getContext("2d")!;
+      fctx.fillStyle = "#e8e8e8";
+      fctx.fillRect(0, 0, W, MAP_H);
+      for (const t of tileImages) fctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
+
+      // Perspective warp: strisce orizzontali, top più stretto
+      const tilt = new OffscreenCanvas(W, MAP_H);
+      const tctx = tilt.getContext("2d")!;
+      const STRIPS = 300;
+      const sh = MAP_H / STRIPS;
+      for (let i = 0; i < STRIPS; i++) {
+        const sy = i * sh;
+        const frac = sy / MAP_H;
+        const scale = 0.58 + 0.42 * frac;
+        const dx = (W * (1 - scale)) / 2;
+        tctx.drawImage(flat, 0, sy, W, sh, dx, sy, W * scale, sh);
+      }
+      // Vignette
+      const vg = tctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.32, W / 2, MAP_H / 2, MAP_H * 0.80);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
+      tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
+
+      // Transform coordinates with matching perspective
+      const perspCoords = pts.map(p => {
+        const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
+        const frac = cy / MAP_H;
+        const scale = 0.58 + 0.42 * frac;
+        const ox = (W * (1 - scale)) / 2;
+        return { x: ox + cx * scale, y: cy };
+      });
+
+      preloadRef.current = { tiltCanvas: tilt, coords: perspCoords };
+    });
+  }, [activity?.id]);
 
   const reelMimeType = MediaRecorder.isTypeSupported("video/mp4")
     ? "video/mp4"
@@ -238,34 +351,63 @@ export default function ActivityDetail() {
     const toCanvasY = (lat: number) => mapOffY + (lat2t(lat, zoom) - ty0) * TILE_PX * tileScale;
     const coords = points.map(p => ({ x: toCanvasX(p.lon), y: toCanvasY(p.lat) }));
 
-    // ── Precarica tile (CartoCDN Dark, CORS-enabled) ─────────────────────────
-    type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
-    const tileImages: TileImg[] = [];
-    const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
-    const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
-    const maxTileIdx = Math.pow(2, zoom);
+    // ── Usa mappa precaricata (o carica al momento) ──────────────────────────
+    let tiltCanvas: OffscreenCanvas;
+    let perspCoords = coords;
 
-    const tilePromises: Promise<void>[] = [];
-    for (let iy = iyMin; iy <= iyMax; iy++) {
-      for (let ix = ixMin; ix <= ixMax; ix++) {
-        if (ix < 0 || iy < 0 || ix >= maxTileIdx || iy >= maxTileIdx) continue;
-        const dx = mapOffX + (ix - tx0) * TILE_PX * tileScale;
-        const dy = mapOffY + (iy - ty0) * TILE_PX * tileScale;
-        const dw = TILE_PX * tileScale, dh = TILE_PX * tileScale;
-        tilePromises.push(new Promise<void>(resolve => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
-          img.onerror = () => resolve();
-          img.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${zoom}/${ix}/${iy}.png`;
-        }));
+    if (preloadRef.current) {
+      tiltCanvas = preloadRef.current.tiltCanvas;
+      perspCoords = preloadRef.current.coords;
+    } else {
+      type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
+      const tileImages: TileImg[] = [];
+      const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
+      const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
+      const maxTileIdx = Math.pow(2, zoom);
+      const tilePromises: Promise<void>[] = [];
+      for (let iy = iyMin; iy <= iyMax; iy++) {
+        for (let ix = ixMin; ix <= ixMax; ix++) {
+          if (ix < 0 || iy < 0 || ix >= maxTileIdx || iy >= maxTileIdx) continue;
+          const dx = mapOffX + (ix - tx0) * TILE_PX * tileScale;
+          const dy = mapOffY + (iy - ty0) * TILE_PX * tileScale;
+          const dw = TILE_PX * tileScale, dh = TILE_PX * tileScale;
+          tilePromises.push(new Promise<void>(resolve => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
+            img.onerror = () => resolve();
+            img.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${zoom}/${ix}/${iy}.png`;
+          }));
+        }
       }
+      await Promise.race([Promise.allSettled(tilePromises), new Promise(r => setTimeout(r, 5000))]);
+
+      // Build flat canvas then apply perspective warp
+      const flat = new OffscreenCanvas(W, MAP_H);
+      const fctx = flat.getContext("2d")!;
+      fctx.fillStyle = "#e8e8e8"; fctx.fillRect(0, 0, W, MAP_H);
+      for (const t of tileImages) fctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
+
+      tiltCanvas = new OffscreenCanvas(W, MAP_H);
+      const tctx = tiltCanvas.getContext("2d")!;
+      const STRIPS = 300, sh = MAP_H / STRIPS;
+      for (let i = 0; i < STRIPS; i++) {
+        const sy = i * sh;
+        const scale = 0.58 + 0.42 * (sy / MAP_H);
+        const dx2 = (W * (1 - scale)) / 2;
+        tctx.drawImage(flat, 0, sy, W, sh, dx2, sy, W * scale, sh);
+      }
+      const vg = tctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.32, W / 2, MAP_H / 2, MAP_H * 0.80);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
+      tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
+
+      perspCoords = points.map(p => {
+        const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
+        const scale = 0.58 + 0.42 * (cy / MAP_H);
+        const ox = (W * (1 - scale)) / 2;
+        return { x: ox + cx * scale, y: cy };
+      });
     }
-    // Attendi le tile con timeout di 5s (poi si procede con quelle caricate)
-    await Promise.race([
-      Promise.allSettled(tilePromises),
-      new Promise(r => setTimeout(r, 5000)),
-    ]);
 
     // ── Canvas setup ─────────────────────────────────────────────────────────
     const canvas = canvasRef.current!;
@@ -340,33 +482,11 @@ export default function ActivityDetail() {
     };
     recorder.start();
 
-    // ── Generatore di fulmini ─────────────────────────────────────────────────
-    type Bolt = { segs: { x: number; y: number }[]; branch: { x: number; y: number }[]; life: number; maxLife: number };
-    const activeBolts: Bolt[] = [];
-    let nextBoltIn = Math.floor(Math.random() * 35 + 15);
-
-    const makeBolt = (fromX: number, fromY: number): Bolt => {
-      const segs: { x: number; y: number }[] = [{ x: fromX, y: fromY }];
-      let cx = fromX, cy = fromY;
-      for (let s = 0; s < 7 + Math.floor(Math.random() * 5); s++) {
-        cx += (Math.random() - 0.45) * 120; cy += 55 + Math.random() * 75;
-        segs.push({ x: cx, y: cy });
-      }
-      const mid = Math.floor(segs.length / 2);
-      const branch: { x: number; y: number }[] = [segs[mid]];
-      let bx = segs[mid].x, by = segs[mid].y;
-      for (let s = 0; s < 4; s++) { bx += (Math.random() - 0.5) * 90; by += 45 + Math.random() * 55; branch.push({ x: bx, y: by }); }
-      return { segs, branch, life: 8 + Math.floor(Math.random() * 5), maxLife: 8 + Math.floor(Math.random() * 5) };
-    };
-
     // ── Draw helpers ─────────────────────────────────────────────────────────
     const drawMapBg = () => {
       ctx.fillStyle = "#e8e8e8";
       ctx.fillRect(0, 0, W, MAP_H);
-      for (const t of tileImages) ctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
-      const vg = ctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.35, W / 2, MAP_H / 2, MAP_H * 0.78);
-      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.25)");
-      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, MAP_H);
+      ctx.drawImage(tiltCanvas, 0, 0, W, MAP_H);
     };
 
     // Pattern: puntini fine stile tessuto sportivo
@@ -382,68 +502,6 @@ export default function ActivityDetail() {
       ctx.restore();
     };
 
-    const pathSegs = (segs: { x: number; y: number }[]) => {
-      ctx.beginPath(); segs.forEach((s, i) => i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y));
-    };
-
-    const drawBolts = () => {
-      nextBoltIn--;
-      if (nextBoltIn <= 0) {
-        const bx = 120 + Math.random() * (W - 240);
-        activeBolts.push(makeBolt(bx, 20 + Math.random() * MAP_H * 0.18));
-        if (Math.random() > 0.55) activeBolts.push(makeBolt(bx + (Math.random() - 0.5) * 220, 20 + Math.random() * MAP_H * 0.15));
-        nextBoltIn = Math.floor(Math.random() * 50 + 20);
-      }
-
-      for (let i = activeBolts.length - 1; i >= 0; i--) {
-        const b = activeBolts[i];
-        const a = b.life / b.maxLife;
-
-        // Flash schermo intero al primo frame
-        if (b.life === b.maxLife) {
-          ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = "#fffde7";
-          ctx.fillRect(0, 0, W, MAP_H); ctx.restore();
-        }
-
-        // Alone scuro esterno (visibile su mappa chiara)
-        ctx.save();
-        ctx.globalAlpha = a;
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = "rgba(10,10,40,0.85)"; ctx.lineWidth = 9;
-        ctx.lineJoin = "round"; ctx.lineCap = "round";
-        pathSegs(b.segs); ctx.stroke();
-        ctx.restore();
-
-        // Fulmine giallo-bianco principale
-        ctx.save();
-        ctx.globalAlpha = a;
-        ctx.shadowBlur = 30; ctx.shadowColor = "#ffe57f";
-        ctx.strokeStyle = "#FFEB3B"; ctx.lineWidth = 4;
-        ctx.lineJoin = "round"; ctx.lineCap = "round";
-        pathSegs(b.segs); ctx.stroke();
-        ctx.restore();
-
-        // Core bianco brillante
-        ctx.save();
-        ctx.globalAlpha = a * 0.9;
-        ctx.shadowBlur = 10; ctx.shadowColor = "white";
-        ctx.strokeStyle = "white"; ctx.lineWidth = 1.5;
-        pathSegs(b.segs); ctx.stroke();
-        ctx.restore();
-
-        // Ramo secondario
-        ctx.save();
-        ctx.globalAlpha = a * 0.7;
-        ctx.shadowBlur = 16; ctx.shadowColor = "#ffe57f";
-        ctx.strokeStyle = "#FFEB3B"; ctx.lineWidth = 2.5;
-        pathSegs(b.branch); ctx.stroke();
-        ctx.restore();
-
-        b.life--;
-        if (b.life <= 0) activeBolts.splice(i, 1);
-      }
-    };
-
     const drawGhost = () => {
       ctx.save();
       ctx.strokeStyle = "rgba(225,29,72,0.38)";
@@ -451,14 +509,14 @@ export default function ActivityDetail() {
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.beginPath();
-      coords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
+      perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
       ctx.stroke();
       ctx.restore();
     };
 
     const drawProgress = (upTo: number) => {
       if (upTo < 2) return;
-      const sub = coords.slice(0, upTo);
+      const sub = perspCoords.slice(0, upTo);
       const stroke = (width: number, color: string, blur: number) => {
         ctx.save();
         ctx.shadowBlur = blur; ctx.shadowColor = "#E11D48";
@@ -475,8 +533,8 @@ export default function ActivityDetail() {
     };
 
     const drawRunner = (frameN: number, upTo: number) => {
-      if (upTo < 1 || upTo >= coords.length) return;
-      const { x, y } = coords[upTo - 1];
+      if (upTo < 1 || upTo >= perspCoords.length) return;
+      const { x, y } = perspCoords[upTo - 1];
       const pt = (frameN % 24) / 24;
       ctx.save();
       ctx.globalAlpha = (1 - pt) * 0.55;
@@ -538,10 +596,9 @@ export default function ActivityDetail() {
 
     const animate = () => {
       const rawT = frame / TOTAL_FRAMES;
-      const upTo = Math.max(2, Math.round(ease(rawT) * (coords.length - 1)) + 1);
+      const upTo = Math.max(2, Math.round(ease(rawT) * (perspCoords.length - 1)) + 1);
       drawMapBg();
       drawPattern();
-      drawBolts();
       drawGhost();
       drawProgress(upTo);
       drawRunner(frame, upTo);
@@ -571,7 +628,7 @@ export default function ActivityDetail() {
   if (error || !activity) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-8 text-center">
-        <p className="text-destructive font-semibold">Attivita non trovata.</p>
+        <p className="text-destructive font-semibold">{t("detail_not_found")}</p>
       </div>
     );
   }
@@ -589,7 +646,33 @@ export default function ActivityDetail() {
             </span>
             <span className="text-sm text-muted-foreground">{formatDate(activity.date)}</span>
           </div>
-          <h1 className="text-2xl font-black">{activity.name}</h1>
+          {renaming ? (
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={e => setRenameValue(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false); }}
+                className="text-2xl font-black border-b-2 border-primary bg-transparent outline-none w-60"
+                disabled={renaming_busy}
+              />
+              <button onClick={handleRename} disabled={renaming_busy} className="text-xs px-2 py-1 bg-primary text-white rounded font-semibold disabled:opacity-60">{t("detail_rename_save")}</button>
+              <button onClick={() => setRenaming(false)} className="text-xs px-2 py-1 border border-border rounded text-muted-foreground">{t("detail_rename_cancel")}</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 group">
+              <h1 className="text-2xl font-black">{activity.name}</h1>
+              <button
+                onClick={() => { setRenameValue(activity.name); setRenaming(true); }}
+                className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-muted"
+                title={t("detail_rename")}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
@@ -614,19 +697,19 @@ export default function ActivityDetail() {
               {reelState === "recording" ? (
                 <>
                   <span className="w-3 h-3 rounded-full bg-white animate-pulse inline-block" />
-                  Registrazione…
+                  {t("detail_recording")}
                 </>
-              ) : "Crea Reel"}
+              ) : t("detail_create_reel")}
             </button>
             <button
               onClick={handleDelete}
               className="px-3 py-2 border border-border rounded-lg text-sm text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
             >
-              Elimina
+              {t("detail_delete")}
             </button>
           </div>
           <p className="text-[10px] text-muted-foreground">
-            {reelQuality === "standard" ? "Standard · 8 Mbps · 12 sec" : "Alta qualità · 14 Mbps · 15 sec"}
+            {reelQuality === "standard" ? t("quality_label_standard") : t("quality_label_hd")}
           </p>
         </div>
       </div>
@@ -637,8 +720,8 @@ export default function ActivityDetail() {
           <div className="flex items-center gap-3 mb-4">
             <div className="text-2xl">🎬</div>
             <div>
-              <p className="font-semibold text-foreground">Reel pronto!</p>
-              <p className="text-sm text-muted-foreground">Guarda l'anteprima e poi scarica o condividi.</p>
+              <p className="font-semibold text-foreground">{t("detail_reel_ready")}</p>
+              <p className="text-sm text-muted-foreground">{t("detail_reel_subtitle")}</p>
             </div>
           </div>
 

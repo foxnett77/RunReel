@@ -8,12 +8,18 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 
 A PWA (Progressive Web App) for GPS activity tracking and social video creation.
 
-### Features
+### Features (v0.35)
 - **GPX Upload**: Drag-and-drop GPX files, parsed client-side with DOMParser
 - **Interactive Maps**: Leaflet (react-leaflet) for displaying routes
 - **Live Tracking**: Real-time GPS tracking via Geolocation API
-- **Reel Creator**: Canvas API + MediaRecorder to generate animated WebM videos
-- **Offline Support**: Service Worker at `/public/sw.js`, OpenStreetMap tile caching
+- **Reel Creator**: Canvas API + MediaRecorder to generate animated WebM videos with 3D perspective map
+  - Standard 12s @ 8Mbps and HD 15s @ 14Mbps quality options
+  - Map tiles preloaded in background via `preloadRef` useEffect
+  - Perspective warp (300 horizontal strips, top=58% width → bottom=100% width)
+  - Synthesized music via Web Audio API
+- **Activity Rename**: Inline rename via PATCH `/api/activities/:id` endpoint (hover pencil icon on title)
+- **i18n**: IT/EN toggle stored in localStorage, toggle button in navbar
+- **Offline Support**: Service Worker `runreel-v35` cache
 - **PWA**: Installable with manifest.json
 
 ### Routes

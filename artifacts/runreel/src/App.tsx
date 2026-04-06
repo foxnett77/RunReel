@@ -9,6 +9,7 @@ import ActivityDetail from "@/pages/ActivityDetail";
 import Live from "@/pages/Live";
 import Upload from "@/pages/Upload";
 import NotFound from "@/pages/not-found";
+import { LangProvider } from "@/lib/i18n";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,14 +37,16 @@ function Router() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <LangProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+            <Router />
+          </WouterRouter>
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </LangProvider>
   );
 }
 

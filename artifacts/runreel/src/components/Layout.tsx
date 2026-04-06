@@ -2,13 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { usePWAInstall } from "@/hooks/usePWAInstall";
-
-const navItems = [
-  { href: "/", label: "Home" },
-  { href: "/activities", label: "Attivita" },
-  { href: "/live", label: "Live" },
-  { href: "/upload", label: "Carica" },
-];
+import { useLang } from "@/lib/i18n";
 
 function useIsIOS() {
   const [isIOS, setIsIOS] = useState(false);
@@ -38,6 +32,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { canInstall, isInstalling, install } = usePWAInstall();
   const { isIOS, isStandalone } = useIsIOS();
+  const { lang, setLang, t } = useLang();
+
+  const navItems = [
+    { href: "/", label: t("nav_home") },
+    { href: "/activities", label: t("nav_activities") },
+    { href: "/live", label: t("nav_live") },
+    { href: "/upload", label: t("nav_upload") },
+  ];
   const [iosBannerDismissed, setIosBannerDismissed] = useState(false);
   const isOnline = useOnlineStatus();
 
@@ -111,7 +113,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="text-primary">Run</span>
                 <span className="text-foreground">Reel</span>
               </span>
-              <span className="text-[10px] font-normal text-muted-foreground">v 0.34</span>
+              <span className="text-[10px] font-normal text-muted-foreground">v 0.35</span>
             </span>
           </Link>
           <nav className="flex items-center gap-1">
@@ -132,6 +134,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
+            {/* Language toggle */}
+            <button
+              onClick={() => setLang(lang === "it" ? "en" : "it")}
+              className="ml-1 px-2 py-1 rounded-md text-xs font-bold text-muted-foreground hover:text-primary hover:bg-muted transition-colors border border-border"
+              title="Cambia lingua / Change language"
+            >
+              {t("lang_toggle")}
+            </button>
             {canInstall && (
               <button
                 onClick={install}
