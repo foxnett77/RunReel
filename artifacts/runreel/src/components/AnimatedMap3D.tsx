@@ -467,19 +467,33 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
       const onLoaded = () => {
         if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
         try {
+          const coords = points.map((p) => [p.lon, p.lat] as [number, number]);
+
+          // Full route as visible base layer
           map.addSource("route-ghost", {
             type: "geojson",
-            data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: points.map((p) => [p.lon, p.lat]) } }] },
+            data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] },
           });
-          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", paint: { "line-color": "rgba(255,255,255,0.08)", "line-width": 5, "line-cap": "round", "line-join": "round" } });
+          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", paint: { "line-color": "rgba(255,255,255,0.25)", "line-width": 4, "line-cap": "round", "line-join": "round" } });
 
-          map.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: buildSegmentFeatures() } });
+          // Speed-colored segments — compute inline so we don't depend on segmentData ref timing
+          const segFeatures = buildSegmentFeatures();
+          const speedFeatures = segFeatures.length > 0 ? segFeatures : (() => {
+            // Fallback: color by position along route (green→red)
+            const n = points.length - 1;
+            return points.slice(0, -1).map((p, i) => ({
+              type: "Feature",
+              properties: { color: lerpColor(i / Math.max(n, 1)) },
+              geometry: { type: "LineString", coordinates: [[p.lon, p.lat], [points[i + 1].lon, points[i + 1].lat]] },
+            }));
+          })();
+          map.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: speedFeatures } });
           map.addLayer({ id: "route-speed", type: "line", source: "route-speed", paint: { "line-color": ["get", "color"], "line-width": 5, "line-cap": "round", "line-join": "round" } });
 
           map.addSource("route-progress", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
           map.addLayer({ id: "route-progress", type: "line", source: "route-progress", paint: { "line-color": "#ffffff", "line-width": 4, "line-cap": "round", "line-join": "round", "line-opacity": 0.9 } });
 
-          map.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [points[0].lon, points[0].lat] } } });
+          map.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coords[0] } } });
           map.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
           map.addLayer({ id: "runner-inner", type: "circle", source: "runner", paint: { "circle-radius": 5, "circle-color": "#E11D48" } });
 
