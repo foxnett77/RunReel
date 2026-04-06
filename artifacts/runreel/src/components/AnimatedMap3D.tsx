@@ -415,30 +415,77 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
     // Test WebGL availability before loading MapLibre
     const testCanvas = document.createElement("canvas");
     const gl = testCanvas.getContext("webgl") || testCanvas.getContext("experimental-webgl");
-    if (!gl) {
-      setWebglFailed(true);
-      return;
-    }
+    if (!gl) { setWebglFailed(true); return; }
 
-    type MapType = {
+    type MapFull = {
       remove(): void;
       on(event: string, cb: () => void): void;
+      once(event: string, cb: () => void): void;
       fitBounds(bounds: [[number, number], [number, number]], opts?: object): void;
       easeTo(opts: object): void;
       getSource(id: string): { setData(data: object): void } | undefined;
       addSource(id: string, source: object): void;
       addLayer(layer: object): void;
+      setStyle(style: unknown): void;
+      isStyleLoaded(): boolean;
     };
-    let map: MapType;
+
+    let map: MapFull;
+    let destroyed = false;
+    let tileAbortCtrl: AbortController | null = null;
+
+    const lats = points.map((p) => p.lat);
+    const lons = points.map((p) => p.lon);
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+    const coords = points.map((p) => [p.lon, p.lat] as [number, number]);
+
+    // ── Adds all route layers to any map instance (called after both offline & real style) ──
+    const addRouteLayers = (m: MapFull) => {
+      const segFeatures = buildSegmentFeatures();
+      const speedFeatures = segFeatures.length > 0 ? segFeatures : (() => {
+        const n = points.length - 1;
+        return points.slice(0, -1).map((p, i) => ({
+          type: "Feature",
+          properties: { color: lerpColor(i / Math.max(n, 1)) },
+          geometry: { type: "LineString", coordinates: [[p.lon, p.lat], [points[i + 1].lon, points[i + 1].lat]] },
+        }));
+      })();
+
+      m.addSource("route-ghost", { type: "geojson", data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] } });
+      m.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "rgba(255,255,255,0.30)", "line-width": 4 } });
+      m.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: speedFeatures } });
+      m.addLayer({ id: "route-speed", type: "line", source: "route-speed", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 5 } });
+      m.addSource("route-progress", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      m.addLayer({ id: "route-progress", type: "line", source: "route-progress", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 4, "line-opacity": 0.9 } });
+      m.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coords[0] } } });
+      m.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
+      m.addLayer({ id: "runner-inner", type: "circle", source: "runner", paint: { "circle-radius": 5, "circle-color": "#E11D48" } });
+    };
+
+    // ── After route layers added, try loading real tiles in background ──
+    const tryUpgradeToRealTiles = () => {
+      const TILE_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+      tileAbortCtrl = new AbortController();
+      const tileTimeout = setTimeout(() => tileAbortCtrl?.abort(), 6000);
+
+      fetch(TILE_STYLE, { signal: tileAbortCtrl.signal })
+        .then((r) => {
+          clearTimeout(tileTimeout);
+          if (!r.ok || destroyed) return;
+          // Switch to real map style — re-add layers after style loads
+          map.setStyle(TILE_STYLE);
+          map.once("style.load", () => {
+            if (destroyed) return;
+            try { addRouteLayers(map); } catch { /* non-critical, route stays on offline bg */ }
+          });
+        })
+        .catch(() => clearTimeout(tileTimeout));
+    };
 
     import("maplibre-gl").then((ml) => {
-      if (!containerRef.current) return;
+      if (destroyed || !containerRef.current) return;
       import("maplibre-gl/dist/maplibre-gl.css");
-
-      const lats = points.map((p) => p.lat);
-      const lons = points.map((p) => p.lon);
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-      const minLon = Math.min(...lons), maxLon = Math.max(...lons);
 
       try {
         map = new ml.Map({
@@ -447,71 +494,46 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
           center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2],
           pitch: 50,
           bearing: -20,
-        }) as MapType;
+          failIfMajorPerformanceCaveat: false,
+          antialias: false,
+        }) as unknown as MapFull;
       } catch {
         setWebglFailed(true);
         return;
       }
 
-      mapRef.current = map;
+      mapRef.current = map as unknown;
 
-      map.on("error", () => setWebglFailed(true));
-
-      // Safety: fall back to canvas if map doesn't become ready in 2.5s
+      // Safety timeout — canvas fallback if map never loads
       loadTimerRef.current = setTimeout(() => {
-        if (!mapRef.current) return;
-        setWebglFailed(true);
-      }, 2500);
+        if (mapRef.current && !destroyed) setWebglFailed(true);
+      }, 5000);
 
-      // With offline style, load can fire before listener is attached — handle both
-      const onLoaded = () => {
+      const onOfflineLoaded = () => {
         if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+        if (destroyed) return;
         try {
-          const coords = points.map((p) => [p.lon, p.lat] as [number, number]);
-
-          // Full route as visible base layer
-          map.addSource("route-ghost", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] },
-          });
-          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "rgba(255,255,255,0.25)", "line-width": 4 } });
-
-          // Speed-colored segments — compute inline so we don't depend on segmentData ref timing
-          const segFeatures = buildSegmentFeatures();
-          const speedFeatures = segFeatures.length > 0 ? segFeatures : (() => {
-            const n = points.length - 1;
-            return points.slice(0, -1).map((p, i) => ({
-              type: "Feature",
-              properties: { color: lerpColor(i / Math.max(n, 1)) },
-              geometry: { type: "LineString", coordinates: [[p.lon, p.lat], [points[i + 1].lon, points[i + 1].lat]] },
-            }));
-          })();
-          map.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: speedFeatures } });
-          map.addLayer({ id: "route-speed", type: "line", source: "route-speed", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 5 } });
-
-          map.addSource("route-progress", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-          map.addLayer({ id: "route-progress", type: "line", source: "route-progress", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 4, "line-opacity": 0.9 } });
-
-          map.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coords[0] } } });
-          map.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
-          map.addLayer({ id: "runner-inner", type: "circle", source: "runner", paint: { "circle-radius": 5, "circle-color": "#E11D48" } });
-
+          addRouteLayers(map);
           map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 60, pitch: 50, bearing: -20, duration: 800 });
           setReady(true);
         } catch {
           setWebglFailed(true);
+          return;
         }
+        // Route is now visible — upgrade to real tiles in background
+        tryUpgradeToRealTiles();
       };
 
-      const mapWithCheck = map as MapType & { isStyleLoaded(): boolean };
-      if (mapWithCheck.isStyleLoaded()) {
-        onLoaded();
+      if (map.isStyleLoaded()) {
+        onOfflineLoaded();
       } else {
-        map.on("load", onLoaded);
+        map.on("load", onOfflineLoaded);
       }
     }).catch(() => setWebglFailed(true));
 
     return () => {
+      destroyed = true;
+      tileAbortCtrl?.abort();
       if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
       if (animRef.current) cancelAnimationFrame(animRef.current);
       if (mapRef.current) (mapRef.current as { remove(): void }).remove();

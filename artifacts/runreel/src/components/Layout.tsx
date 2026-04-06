@@ -22,16 +22,41 @@ function useIsIOS() {
   return { isIOS, isStandalone };
 }
 
+function useOnlineStatus() {
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+  return online;
+}
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { canInstall, isInstalling, install } = usePWAInstall();
   const { isIOS, isStandalone } = useIsIOS();
   const [iosBannerDismissed, setIosBannerDismissed] = useState(false);
+  const isOnline = useOnlineStatus();
 
   const showIOSBanner = isIOS && !isStandalone && !canInstall && !iosBannerDismissed;
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
+      {/* Offline banner */}
+      {!isOnline && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-2.5">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-amber-600">
+            <path d="M1 6c3.18-3.2 8.28-4.5 12.9-3.1"/><path d="M5 10a9.9 9.9 0 0 1 5.26-2.93"/><path d="M10.7 14.1A4 4 0 0 1 16 18"/><path d="m2 2 20 20"/><path d="M8.5 8.5A9.86 9.86 0 0 0 3 14"/><path d="M16.72 11.06A10 10 0 0 1 19 12.93"/>
+          </svg>
+          <p className="text-xs text-amber-800 leading-snug">
+            <strong>Sei offline.</strong> Le attività salvate sono disponibili, ma la mappa di sfondo e il caricamento di nuovi file GPX richiedono una connessione.
+          </p>
+        </div>
+      )}
+
       {/* iOS install hint */}
       {showIOSBanner && (
         <div className="bg-blue-50 border-b border-blue-100 px-4 py-2.5 flex items-center justify-between gap-4">
@@ -86,7 +111,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="text-primary">Run</span>
                 <span className="text-foreground">Reel</span>
               </span>
-              <span className="text-[10px] font-normal text-muted-foreground">v 0.25</span>
+              <span className="text-[10px] font-normal text-muted-foreground">v 0.27</span>
             </span>
           </Link>
           <nav className="flex items-center gap-1">
