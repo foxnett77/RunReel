@@ -474,12 +474,11 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
             type: "geojson",
             data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] },
           });
-          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", paint: { "line-color": "rgba(255,255,255,0.25)", "line-width": 4, "line-cap": "round", "line-join": "round" } });
+          map.addLayer({ id: "route-ghost", type: "line", source: "route-ghost", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "rgba(255,255,255,0.25)", "line-width": 4 } });
 
           // Speed-colored segments — compute inline so we don't depend on segmentData ref timing
           const segFeatures = buildSegmentFeatures();
           const speedFeatures = segFeatures.length > 0 ? segFeatures : (() => {
-            // Fallback: color by position along route (green→red)
             const n = points.length - 1;
             return points.slice(0, -1).map((p, i) => ({
               type: "Feature",
@@ -488,10 +487,10 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
             }));
           })();
           map.addSource("route-speed", { type: "geojson", data: { type: "FeatureCollection", features: speedFeatures } });
-          map.addLayer({ id: "route-speed", type: "line", source: "route-speed", paint: { "line-color": ["get", "color"], "line-width": 5, "line-cap": "round", "line-join": "round" } });
+          map.addLayer({ id: "route-speed", type: "line", source: "route-speed", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 5 } });
 
           map.addSource("route-progress", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-          map.addLayer({ id: "route-progress", type: "line", source: "route-progress", paint: { "line-color": "#ffffff", "line-width": 4, "line-cap": "round", "line-join": "round", "line-opacity": 0.9 } });
+          map.addLayer({ id: "route-progress", type: "line", source: "route-progress", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 4, "line-opacity": 0.9 } });
 
           map.addSource("runner", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coords[0] } } });
           map.addLayer({ id: "runner-outer", type: "circle", source: "runner", paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-stroke-width": 3, "circle-stroke-color": "#E11D48" } });
@@ -558,15 +557,28 @@ export default function AnimatedMap3D({ points, distanceKm, elevationGainM, dura
   }, [stopAnimation, points]);
 
   // ── Canvas fallback if WebGL unavailable ──
-  if (webglFailed && segmentData.current) {
-    const { speeds, minSpeed, maxSpeed, cumDist } = segmentData.current;
+  if (webglFailed) {
+    // Compute inline if segmentData ref isn't ready yet (avoids black screen race)
+    const data = segmentData.current ?? (() => {
+      const speeds: number[] = [];
+      const cumDist: number[] = [0];
+      let totalDist = 0;
+      for (let i = 1; i < points.length; i++) {
+        const dist = haversineM(points[i - 1], points[i]);
+        totalDist += dist;
+        cumDist.push(totalDist);
+        speeds.push(dist);
+      }
+      const valid = speeds.filter((s) => s > 0);
+      return { speeds, minSpeed: valid.length ? Math.min(...valid) : 0, maxSpeed: valid.length ? Math.max(...valid) : 1, cumDist };
+    })();
     return (
       <CanvasFallback
         points={points}
-        segSpeeds={speeds}
-        minSpeed={minSpeed}
-        maxSpeed={maxSpeed}
-        cumDist={cumDist}
+        segSpeeds={data.speeds}
+        minSpeed={data.minSpeed}
+        maxSpeed={data.maxSpeed}
+        cumDist={data.cumDist}
         distanceKm={distanceKm}
         elevationGainM={elevationGainM}
         durationSecs={durationSecs}
