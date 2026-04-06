@@ -209,9 +209,64 @@ export default function ActivityDetail() {
     canvas.height = H;
     const ctx = canvas.getContext("2d")!;
 
-    // ── MediaRecorder ────────────────────────────────────────────────────────
-    const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: reelMimeType, videoBitsPerSecond: 8_000_000 });
+    // ── Musica sintetizzata via Web Audio (prima del recorder) ───────────────
+    let audioDest: MediaStreamAudioDestinationNode | null = null;
+    try {
+      const audioCtx = new AudioContext();
+      audioDest = audioCtx.createMediaStreamDestination();
+      const bpm = 130, beatSec = 60 / bpm;
+      const totalBeats = Math.ceil(DURATION_MS / 1000 / beatSec) + 4;
+      const t0 = audioCtx.currentTime + 0.08;
+
+      const kick = (t: number) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.connect(g); g.connect(audioDest!);
+        o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(0.01, t + 0.45);
+        g.gain.setValueAtTime(1.1, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+        o.start(t); o.stop(t + 0.5);
+      };
+      const snare = (t: number) => {
+        const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.12), audioCtx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.2);
+        const src = audioCtx.createBufferSource(); src.buffer = buf;
+        const f = audioCtx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 2800; f.Q.value = 0.7;
+        const g = audioCtx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        src.connect(f); f.connect(g); g.connect(audioDest!); src.start(t);
+      };
+      const hihat = (t: number, vol: number) => {
+        const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.04), audioCtx.sampleRate);
+        const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        const src = audioCtx.createBufferSource(); src.buffer = buf;
+        const f = audioCtx.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 9000;
+        const g = audioCtx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+        src.connect(f); f.connect(g); g.connect(audioDest!); src.start(t);
+      };
+      const synth = (t: number, freq: number) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = "sawtooth"; o.frequency.value = freq;
+        const f = audioCtx.createBiquadFilter(); f.type = "lowpass"; f.frequency.setValueAtTime(2200, t); f.frequency.exponentialRampToValueAtTime(400, t + 0.25);
+        o.connect(f); f.connect(g); g.connect(audioDest!);
+        g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+        o.start(t); o.stop(t + 0.3);
+      };
+      const bassline = [220, 220, 165, 196, 220, 246, 220, 196];
+      for (let b = 0; b < totalBeats; b++) {
+        const t = t0 + b * beatSec;
+        const inBar = b % 4;
+        if (inBar === 0 || inBar === 2) kick(t);
+        if (inBar === 1 || inBar === 3) snare(t);
+        hihat(t, 0.3); hihat(t + beatSec * 0.5, 0.18);
+        synth(t, bassline[b % bassline.length]);
+      }
+    } catch { /* audio non supportato */ }
+
+    // ── MediaRecorder (video + audio opzionale) ───────────────────────────────
+    const videoStream = canvas.captureStream(fps);
+    const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+    if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
+    const combinedStream = new MediaStream(tracks);
+    const recorder = new MediaRecorder(combinedStream, { mimeType: reelMimeType, videoBitsPerSecond: 8_000_000 });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
@@ -221,107 +276,108 @@ export default function ActivityDetail() {
     };
     recorder.start();
 
-    // ── Generatore di fulmini (stato persistente tra frame) ──────────────────
-    type Bolt = { segs: { x: number; y: number }[]; life: number; maxLife: number; color: string };
+    // ── Generatore di fulmini ─────────────────────────────────────────────────
+    type Bolt = { segs: { x: number; y: number }[]; branch: { x: number; y: number }[]; life: number; maxLife: number };
     const activeBolts: Bolt[] = [];
-    let nextBoltIn = Math.floor(Math.random() * 40 + 20); // frame prima del prossimo fulmine
+    let nextBoltIn = Math.floor(Math.random() * 35 + 15);
 
     const makeBolt = (fromX: number, fromY: number): Bolt => {
       const segs: { x: number; y: number }[] = [{ x: fromX, y: fromY }];
       let cx = fromX, cy = fromY;
-      const steps = 6 + Math.floor(Math.random() * 6);
-      for (let s = 0; s < steps; s++) {
-        cx += (Math.random() - 0.45) * 130;
-        cy += 60 + Math.random() * 80;
+      for (let s = 0; s < 7 + Math.floor(Math.random() * 5); s++) {
+        cx += (Math.random() - 0.45) * 120; cy += 55 + Math.random() * 75;
         segs.push({ x: cx, y: cy });
       }
-      const maxLife = 6 + Math.floor(Math.random() * 6);
-      return { segs, life: maxLife, maxLife, color: Math.random() > 0.4 ? "#ffffff" : "#a5f3fc" };
+      const mid = Math.floor(segs.length / 2);
+      const branch: { x: number; y: number }[] = [segs[mid]];
+      let bx = segs[mid].x, by = segs[mid].y;
+      for (let s = 0; s < 4; s++) { bx += (Math.random() - 0.5) * 90; by += 45 + Math.random() * 55; branch.push({ x: bx, y: by }); }
+      return { segs, branch, life: 8 + Math.floor(Math.random() * 5), maxLife: 8 + Math.floor(Math.random() * 5) };
     };
 
     // ── Draw helpers ─────────────────────────────────────────────────────────
     const drawMapBg = () => {
-      ctx.fillStyle = "#e8e8e8";   // fallback chiaro se tile non caricate
+      ctx.fillStyle = "#e8e8e8";
       ctx.fillRect(0, 0, W, MAP_H);
       for (const t of tileImages) ctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
-      // Vignette leggera — solo ai bordi, al centro la mappa è visibile
       const vg = ctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.35, W / 2, MAP_H / 2, MAP_H * 0.78);
-      vg.addColorStop(0, "rgba(0,0,0,0)");
-      vg.addColorStop(1, "rgba(0,0,0,0.28)");
-      ctx.fillStyle = vg;
-      ctx.fillRect(0, 0, W, MAP_H);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.25)");
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, MAP_H);
     };
 
+    // Pattern: puntini fine stile tessuto sportivo
     const drawPattern = () => {
-      // Righe diagonali stile maglietta sportiva
       ctx.save();
-      ctx.globalAlpha = 0.065;
-      ctx.strokeStyle = "#E11D48";
-      ctx.lineWidth = 18;
-      for (let d = -MAP_H; d < W + MAP_H; d += 90) {
-        ctx.beginPath();
-        ctx.moveTo(d, 0);
-        ctx.lineTo(d + MAP_H, MAP_H);
-        ctx.stroke();
-      }
-      // Seconda serie più sottile in bianco
-      ctx.globalAlpha = 0.04;
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 6;
-      for (let d = -MAP_H + 45; d < W + MAP_H; d += 90) {
-        ctx.beginPath();
-        ctx.moveTo(d, 0);
-        ctx.lineTo(d + MAP_H, MAP_H);
-        ctx.stroke();
+      ctx.globalAlpha = 0.07;
+      ctx.fillStyle = "#000000";
+      for (let y = 6; y < MAP_H; y += 14) {
+        for (let x = (Math.floor(y / 14) % 2 === 0 ? 6 : 13); x < W; x += 20) {
+          ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
+        }
       }
       ctx.restore();
     };
 
-    const drawBolts = (frameN: number) => {
-      // Crea nuovi fulmini
+    const pathSegs = (segs: { x: number; y: number }[]) => {
+      ctx.beginPath(); segs.forEach((s, i) => i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y));
+    };
+
+    const drawBolts = () => {
       nextBoltIn--;
       if (nextBoltIn <= 0) {
-        const bx = 100 + Math.random() * (W - 200);
-        activeBolts.push(makeBolt(bx, Math.random() * MAP_H * 0.3));
-        // A volte due fulmini ravvicinati
-        if (Math.random() > 0.6) activeBolts.push(makeBolt(bx + (Math.random() - 0.5) * 200, Math.random() * MAP_H * 0.25));
-        nextBoltIn = Math.floor(Math.random() * 55 + 25);
+        const bx = 120 + Math.random() * (W - 240);
+        activeBolts.push(makeBolt(bx, 20 + Math.random() * MAP_H * 0.18));
+        if (Math.random() > 0.55) activeBolts.push(makeBolt(bx + (Math.random() - 0.5) * 220, 20 + Math.random() * MAP_H * 0.15));
+        nextBoltIn = Math.floor(Math.random() * 50 + 20);
       }
-      // Disegna e decade
+
       for (let i = activeBolts.length - 1; i >= 0; i--) {
         const b = activeBolts[i];
-        const alpha = b.life / b.maxLife;
-        ctx.save();
-        ctx.globalAlpha = alpha * 0.9;
-        ctx.shadowBlur = 22; ctx.shadowColor = b.color;
-        ctx.strokeStyle = b.color; ctx.lineWidth = alpha > 0.5 ? 3 : 1.5;
-        ctx.lineJoin = "round"; ctx.lineCap = "round";
-        ctx.beginPath();
-        b.segs.forEach((s, idx) => idx === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y));
-        ctx.stroke();
-        // Branche secondarie (1-2)
-        if (b.segs.length > 3) {
-          const midIdx = Math.floor(b.segs.length / 2);
-          ctx.globalAlpha = alpha * 0.55;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(b.segs[midIdx].x, b.segs[midIdx].y);
-          ctx.lineTo(b.segs[midIdx].x + (Math.random() - 0.5) * 100, b.segs[midIdx].y + 80);
-          ctx.stroke();
-        }
-        ctx.restore();
-        // Flash di luce bianca al primo frame
+        const a = b.life / b.maxLife;
+
+        // Flash schermo intero al primo frame
         if (b.life === b.maxLife) {
-          ctx.save();
-          ctx.globalAlpha = 0.12;
-          ctx.fillStyle = "white";
-          ctx.fillRect(0, 0, W, MAP_H);
-          ctx.restore();
+          ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = "#fffde7";
+          ctx.fillRect(0, 0, W, MAP_H); ctx.restore();
         }
+
+        // Alone scuro esterno (visibile su mappa chiara)
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(10,10,40,0.85)"; ctx.lineWidth = 9;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        pathSegs(b.segs); ctx.stroke();
+        ctx.restore();
+
+        // Fulmine giallo-bianco principale
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.shadowBlur = 30; ctx.shadowColor = "#ffe57f";
+        ctx.strokeStyle = "#FFEB3B"; ctx.lineWidth = 4;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        pathSegs(b.segs); ctx.stroke();
+        ctx.restore();
+
+        // Core bianco brillante
+        ctx.save();
+        ctx.globalAlpha = a * 0.9;
+        ctx.shadowBlur = 10; ctx.shadowColor = "white";
+        ctx.strokeStyle = "white"; ctx.lineWidth = 1.5;
+        pathSegs(b.segs); ctx.stroke();
+        ctx.restore();
+
+        // Ramo secondario
+        ctx.save();
+        ctx.globalAlpha = a * 0.7;
+        ctx.shadowBlur = 16; ctx.shadowColor = "#ffe57f";
+        ctx.strokeStyle = "#FFEB3B"; ctx.lineWidth = 2.5;
+        pathSegs(b.branch); ctx.stroke();
+        ctx.restore();
+
         b.life--;
         if (b.life <= 0) activeBolts.splice(i, 1);
       }
-      void frameN;
     };
 
     const drawGhost = () => {
@@ -421,7 +477,7 @@ export default function ActivityDetail() {
       const upTo = Math.max(2, Math.round(ease(rawT) * (coords.length - 1)) + 1);
       drawMapBg();
       drawPattern();
-      drawBolts(frame);
+      drawBolts();
       drawGhost();
       drawProgress(upTo);
       drawRunner(frame, upTo);
