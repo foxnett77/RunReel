@@ -173,6 +173,8 @@ export default function ActivityDetail() {
   const [reelOptionsOpen, setReelOptionsOpen] = useState(false);
   const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
   const [reelDuration, setReelDuration] = useState(20);
+  const [reelFormat, setReelFormat] = useState<'9:16' | '16:9'>('9:16');
+  const [reelQualityOpt, setReelQualityOpt] = useState<'standard' | 'hd'>('standard');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -319,7 +321,11 @@ export default function ActivityDetail() {
     : "video/webm; codecs=vp9";
   const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
-  const handleCreateReel = async (durationSecs = 12) => {
+  const handleCreateReel = async (
+    durationSecs = 12,
+    format: '9:16' | '16:9' = '9:16',
+    quality: 'standard' | 'hd' = 'standard'
+  ) => {
     if (!activity) return;
     const points = (activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? [];
     if (points.length < 2) return;
@@ -327,13 +333,14 @@ export default function ActivityDetail() {
     setReelState("recording");
     setReelUrl(null);
 
-    const W = 1080, H = 1920;
+    const W = format === '16:9' ? 1920 : 1080;
+    const H = format === '16:9' ? 1080 : 1920;
     const MAP_H = Math.round(H * 0.72);
     const STATS_Y = MAP_H;
     const fps = 30;
     const DURATION_MS = durationSecs * 1000;
     const TOTAL_FRAMES = Math.round((DURATION_MS / 1000) * fps);
-    const BITRATE = durationSecs >= 20 ? 12_000_000 : 8_000_000;
+    const BITRATE = quality === 'hd' ? 16_000_000 : 8_000_000;
 
     // ── Coordinate bounds ────────────────────────────────────────────────────
     const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
@@ -912,7 +919,7 @@ export default function ActivityDetail() {
             </a>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            {reelDuration >= 20 ? `Alta qualità · 12 Mbps · ${reelDuration}s` : `Standard · 8 Mbps · ${reelDuration}s`}
+            {reelFormat} · {reelDuration}s · {reelQualityOpt === 'hd' ? '16 Mbps HD' : '8 Mbps Standard'}
           </p>
         </div>
       )}
@@ -962,10 +969,12 @@ export default function ActivityDetail() {
             onStart={(opts) => {
               setReelOptionsOpen(false);
               setReelDuration(opts.duration);
+              setReelFormat(opts.format);
+              setReelQualityOpt(opts.quality);
               if (opts.style === '3d') {
                 setCesiumReelOpen(true);
               } else {
-                handleCreateReel(opts.duration).catch(() => setReelState("idle"));
+                handleCreateReel(opts.duration, opts.format, opts.quality).catch(() => setReelState("idle"));
               }
             }}
           />
@@ -989,6 +998,8 @@ export default function ActivityDetail() {
               elevationGainM: activity.elevationGainM ?? null,
             }}
             reelDuration={reelDuration}
+            format={reelFormat}
+            quality={reelQualityOpt}
             onComplete={(url, _ext) => {
               setReelUrl(url);
               setReelState("done");

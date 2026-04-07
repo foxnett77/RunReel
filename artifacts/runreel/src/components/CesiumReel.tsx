@@ -14,6 +14,8 @@ interface CesiumReelProps {
   points: Point[];
   activity: ActivityInfo;
   reelDuration: number;
+  format?: '9:16' | '16:9';
+  quality?: 'standard' | 'hd';
   onComplete: (url: string, ext: string) => void;
   onCancel: () => void;
 }
@@ -22,7 +24,7 @@ const canRecordStream =
   typeof (HTMLCanvasElement.prototype as { captureStream?: unknown }).captureStream === 'function' &&
   typeof MediaRecorder !== 'undefined';
 
-export default function CesiumReel({ points, activity, reelDuration, onComplete, onCancel }: CesiumReelProps) {
+export default function CesiumReel({ points, activity, reelDuration, format = '9:16', quality = 'standard', onComplete, onCancel }: CesiumReelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<'init' | 'flyto' | 'rec' | 'playing' | 'done'>('init');
   const [pct, setPct] = useState(0);
@@ -195,7 +197,8 @@ export default function CesiumReel({ points, activity, reelDuration, onComplete,
           ? 'video/webm; codecs=vp9'
           : 'video/webm';
         const stream = cesiumViewer.canvas.captureStream(30);
-        mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const bitrate = quality === 'hd' ? 16_000_000 : 8_000_000;
+        mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitrate });
         const chunks: Blob[] = [];
         mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
         mediaRecorder.onstop = () => {
