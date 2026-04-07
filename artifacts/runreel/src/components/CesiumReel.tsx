@@ -18,9 +18,13 @@ interface CesiumReelProps {
   onCancel: () => void;
 }
 
+const canRecordStream =
+  typeof (HTMLCanvasElement.prototype as { captureStream?: unknown }).captureStream === 'function' &&
+  typeof MediaRecorder !== 'undefined';
+
 export default function CesiumReel({ points, activity, reelDuration, onComplete, onCancel }: CesiumReelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [phase, setPhase] = useState<'init' | 'flyto' | 'rec' | 'done'>('init');
+  const [phase, setPhase] = useState<'init' | 'flyto' | 'rec' | 'playing' | 'done'>('init');
   const [pct, setPct] = useState(0);
 
   useEffect(() => {
@@ -183,33 +187,45 @@ export default function CesiumReel({ points, activity, reelDuration, onComplete,
       if (destroyed) { cesiumViewer.destroy(); return; }
 
       cesiumViewer.trackedEntity = runner;
-      setPhase('rec');
       clock.shouldAnimate = true;
 
-      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9')
-        ? 'video/webm; codecs=vp9'
-        : 'video/webm';
-      const stream = cesiumViewer.canvas.captureStream(30);
-      mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-      mediaRecorder.onstop = () => {
-        if (destroyed) return;
-        const blob = new Blob(chunks, { type: mimeType });
-        onComplete(URL.createObjectURL(blob), 'webm');
-        setPhase('done');
-      };
-      mediaRecorder.start(200);
+      if (canRecordStream) {
+        setPhase('rec');
+        const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9')
+          ? 'video/webm; codecs=vp9'
+          : 'video/webm';
+        const stream = cesiumViewer.canvas.captureStream(30);
+        mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const chunks: Blob[] = [];
+        mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+          if (destroyed) return;
+          const blob = new Blob(chunks, { type: mimeType });
+          onComplete(URL.createObjectURL(blob), 'webm');
+          setPhase('done');
+        };
+        mediaRecorder.start(200);
 
-      const tick = () => {
-        if (destroyed || !cesiumViewer) return;
-        const elapsed = C.JulianDate.secondsDifference(cesiumViewer.clock.currentTime, start);
-        const p = Math.min(1, elapsed / reelDuration);
-        setPct(p);
-        if (p >= 1) { mediaRecorder?.stop(); return; }
+        const tick = () => {
+          if (destroyed || !cesiumViewer) return;
+          const elapsed = C.JulianDate.secondsDifference(cesiumViewer.clock.currentTime, start);
+          const p = Math.min(1, elapsed / reelDuration);
+          setPct(p);
+          if (p >= 1) { mediaRecorder?.stop(); return; }
+          rafId = requestAnimationFrame(tick);
+        };
         rafId = requestAnimationFrame(tick);
-      };
-      rafId = requestAnimationFrame(tick);
+      } else {
+        // iOS / no captureStream: just play the scene, let user screen-record manually
+        setPhase('playing');
+        const tick = () => {
+          if (destroyed || !cesiumViewer) return;
+          const elapsed = C.JulianDate.secondsDifference(cesiumViewer.clock.currentTime, start);
+          setPct(Math.min(1, elapsed / reelDuration));
+          rafId = requestAnimationFrame(tick);
+        };
+        rafId = requestAnimationFrame(tick);
+      }
     };
 
     run().catch(err => console.error('CesiumReel:', err));
@@ -226,35 +242,38 @@ export default function CesiumReel({ points, activity, reelDuration, onComplete,
     init: 'Caricamento terreno 3D…',
     flyto: 'Panoramica percorso…',
     rec: `● REC  ${Math.round(pct * 100)}%`,
+    playing: `▶ Visualizzazione  ${Math.round(pct * 100)}%`,
     done: '✓ Completato',
   };
+
+  const statsCards = [
+    { v: activity.distanceKm != null ? `${activity.distanceKm.toFixed(2)} km` : '—', l: 'distanza' },
+    { v: activity.elevationGainM != null ? `+${Math.round(activity.elevationGainM)} m` : '—', l: 'dislivello' },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black select-none">
       <div ref={containerRef} className="flex-1 w-full" />
 
-      <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
-        <span className={`text-sm font-bold px-3 py-1.5 rounded-lg pointer-events-none ${
+      {/* Top bar */}
+      <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
+        <span className={`text-sm font-bold px-3 py-1.5 rounded-lg ${
           phase === 'rec' ? 'bg-red-600 text-white' : 'bg-black/70 text-white'
         }`}>
           {phaseLabel[phase]}
         </span>
-        {phase !== 'done' && (
-          <button
-            onClick={onCancel}
-            className="pointer-events-auto text-white bg-black/70 hover:bg-black/90 px-3 py-1.5 rounded-lg text-sm font-medium"
-          >
-            ✕ Annulla
-          </button>
-        )}
+        <button
+          onClick={onCancel}
+          className="text-white bg-black/70 hover:bg-black/90 px-3 py-1.5 rounded-lg text-sm font-medium"
+        >
+          ✕ {phase === 'done' ? 'Chiudi' : 'Annulla'}
+        </button>
       </div>
 
-      {(phase === 'rec' || phase === 'done') && (
+      {/* Stats */}
+      {(phase === 'rec' || phase === 'playing' || phase === 'done') && (
         <div className="absolute bottom-6 left-4 right-4 flex gap-2 justify-center pointer-events-none">
-          {[
-            { v: activity.distanceKm != null ? `${activity.distanceKm.toFixed(2)} km` : '—', l: 'distanza' },
-            { v: activity.elevationGainM != null ? `+${Math.round(activity.elevationGainM)} m` : '—', l: 'dislivello' },
-          ].map(s => (
+          {statsCards.map(s => (
             <div key={s.l} className="bg-black/70 text-white rounded-lg px-4 py-2 text-center min-w-[90px]">
               <div className="font-bold text-sm">{s.v}</div>
               <div className="text-[10px] text-white/60 uppercase tracking-wide">{s.l}</div>
@@ -263,6 +282,16 @@ export default function CesiumReel({ points, activity, reelDuration, onComplete,
         </div>
       )}
 
+      {/* iOS screen-recording hint */}
+      {phase === 'playing' && (
+        <div className="absolute bottom-24 left-4 right-4 flex justify-center pointer-events-none">
+          <div className="bg-amber-500/90 text-black rounded-xl px-4 py-2 text-xs font-semibold text-center max-w-xs">
+            📱 Usa la Registrazione Schermo del Centro di Controllo iOS per salvare il reel
+          </div>
+        </div>
+      )}
+
+      {/* Progress bar */}
       <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10">
         <div
           className="h-full bg-red-500"

@@ -7,6 +7,7 @@ import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMa
 import { useLang } from "@/lib/i18n";
 
 const CesiumReel = lazy(() => import('@/components/CesiumReel'));
+const ReelOptions = lazy(() => import('@/components/ReelOptions'));
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -169,8 +170,9 @@ export default function ActivityDetail() {
   const { t } = useLang();
   const [reelState, setReelState] = useState<"idle" | "recording" | "done">("idle");
   const [reelUrl, setReelUrl] = useState<string | null>(null);
-  const [reelQuality, setReelQuality] = useState<"standard" | "alta">("standard");
+  const [reelOptionsOpen, setReelOptionsOpen] = useState(false);
   const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
+  const [reelDuration, setReelDuration] = useState(20);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -317,7 +319,7 @@ export default function ActivityDetail() {
     : "video/webm; codecs=vp9";
   const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
-  const handleCreateReel = async () => {
+  const handleCreateReel = async (durationSecs = 12) => {
     if (!activity) return;
     const points = (activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? [];
     if (points.length < 2) return;
@@ -329,9 +331,9 @@ export default function ActivityDetail() {
     const MAP_H = Math.round(H * 0.72);
     const STATS_Y = MAP_H;
     const fps = 30;
-    const DURATION_MS = reelQuality === "alta" ? 15000 : 12000;
+    const DURATION_MS = durationSecs * 1000;
     const TOTAL_FRAMES = Math.round((DURATION_MS / 1000) * fps);
-    const BITRATE = reelQuality === "alta" ? 14_000_000 : 8_000_000;
+    const BITRATE = durationSecs >= 20 ? 12_000_000 : 8_000_000;
 
     // ── Coordinate bounds ────────────────────────────────────────────────────
     const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
@@ -811,24 +813,14 @@ export default function ActivityDetail() {
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
-            {/* Qualità */}
-            <div className="flex border border-border rounded-lg overflow-hidden text-xs font-semibold">
-              {(["standard", "alta"] as const).map((q) => (
-                <button
-                  key={q}
-                  onClick={() => setReelQuality(q)}
-                  disabled={reelState === "recording"}
-                  className={`px-3 py-2 transition-colors ${reelQuality === q ? "bg-primary text-white" : "bg-white text-muted-foreground hover:bg-muted"}`}
-                >
-                  {q === "standard" ? "12s" : "3D 20s"}
-                </button>
-              ))}
-            </div>
             <button
-              onClick={() => setCesiumReelOpen(true)}
-              disabled={cesiumReelOpen}
-              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60"
+              onClick={() => setReelOptionsOpen(true)}
+              disabled={reelState === "recording" || cesiumReelOpen}
+              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center gap-1.5"
             >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/>
+              </svg>
               {t("detail_create_reel")}
             </button>
             <button
@@ -838,9 +830,6 @@ export default function ActivityDetail() {
               {t("detail_delete")}
             </button>
           </div>
-          <p className="text-[10px] text-muted-foreground">
-            {reelQuality === "standard" ? t("quality_label_standard") : t("quality_label_hd")}
-          </p>
         </div>
       </div>
 
@@ -923,7 +912,7 @@ export default function ActivityDetail() {
             </a>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            {reelQuality === "alta" ? "Alta qualità · 14 Mbps · 15 sec" : "Standard · 8 Mbps · 12 sec"}
+            {reelDuration >= 20 ? `Alta qualità · 12 Mbps · ${reelDuration}s` : `Standard · 8 Mbps · ${reelDuration}s`}
           </p>
         </div>
       )}
@@ -963,6 +952,26 @@ export default function ActivityDetail() {
       {/* Elevation */}
       <ElevationChart points={points} />
 
+      {/* Schermata opzioni reel */}
+      {reelOptionsOpen && activity && (
+        <Suspense fallback={null}>
+          <ReelOptions
+            activityName={activity.name}
+            hasElevation={((activity.elevationGainM ?? 0) > 0)}
+            onCancel={() => setReelOptionsOpen(false)}
+            onStart={(opts) => {
+              setReelOptionsOpen(false);
+              setReelDuration(opts.duration);
+              if (opts.style === '3d') {
+                setCesiumReelOpen(true);
+              } else {
+                handleCreateReel(opts.duration).catch(() => setReelState("idle"));
+              }
+            }}
+          />
+        </Suspense>
+      )}
+
       {/* CesiumJS 3D Reel overlay */}
       {cesiumReelOpen && activity && (
         <Suspense fallback={
@@ -979,7 +988,7 @@ export default function ActivityDetail() {
               avgPaceSecPerKm: activity.avgPaceSecPerKm ?? null,
               elevationGainM: activity.elevationGainM ?? null,
             }}
-            reelDuration={reelQuality === "standard" ? 12 : 20}
+            reelDuration={reelDuration}
             onComplete={(url, _ext) => {
               setReelUrl(url);
               setReelState("done");
