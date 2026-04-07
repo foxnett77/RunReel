@@ -240,7 +240,7 @@ function CanvasFallback({ points, segSpeeds, minSpeed, maxSpeed, cumDist, distan
     const startWall = performance.now() - startProg * ANIM_DURATION_MS;
 
     const tick = (now: number) => {
-      const t = Math.min((now - startWall) / ANIM_DURATION_MS, 1);
+      const t = Math.max(0, Math.min((now - startWall) / ANIM_DURATION_MS, 1));
       setProgress(t);
       draw(t);
       if (t < 1) animRef.current = requestAnimationFrame(tick);
@@ -405,6 +405,7 @@ const AnimatedMap3D = forwardRef<AnimatedMap3DHandle, Props>(function AnimatedMa
     for (let i = 0; i < points.length; i++) {
       if (cumDist[i] <= targetDist) { coords.push([points[i].lon, points[i].lat]); }
       else {
+        if (i === 0) { coords.push([points[0].lon, points[0].lat]); break; }
         const frac = cumDist[i] - (cumDist[i - 1] ?? 0) > 0
           ? (targetDist - (cumDist[i - 1] ?? 0)) / (cumDist[i] - (cumDist[i - 1] ?? 0)) : 0;
         coords.push(lerpPt(points[i - 1], points[i], frac));
@@ -561,7 +562,7 @@ const AnimatedMap3D = forwardRef<AnimatedMap3DHandle, Props>(function AnimatedMa
     const startWall = performance.now() - startProg * ANIM_DURATION_MS;
 
     const tick = (now: number) => {
-      const t = Math.min((now - startWall) / ANIM_DURATION_MS, 1);
+      const t = Math.max(0, Math.min((now - startWall) / ANIM_DURATION_MS, 1));
       setProgress(t);
       const { coord, bearing } = getPositionAtProgress(t);
       map.getSource("runner")?.setData({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coord } });
