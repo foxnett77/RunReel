@@ -316,9 +316,17 @@ export default function ActivityDetail() {
     });
   }, [activity?.id]);
 
-  const reelMimeType = MediaRecorder.isTypeSupported("video/mp4")
-    ? "video/mp4"
-    : "video/webm; codecs=vp9";
+  const reelMimeType = (() => {
+    const candidates = [
+      "video/webm; codecs=vp9",
+      "video/webm; codecs=vp8",
+      "video/webm",
+      "video/mp4",
+    ];
+    return candidates.find(t => {
+      try { return MediaRecorder.isTypeSupported(t); } catch { return false; }
+    }) ?? "";
+  })();
   const reelExtension = reelMimeType.startsWith("video/mp4") ? "mp4" : "webm";
 
   const handleCreateReel = async (
@@ -384,11 +392,11 @@ export default function ActivityDetail() {
     const hasElev = eleRange > 1;
     const MAX_ELEV_PX = 180;
 
-    // ── Usa mappa precaricata (o carica al momento) ──────────────────────────
+    // ── Usa mappa precaricata solo se il formato coincide (9:16 a 1080×1920) ──
     let tiltCanvas: OffscreenCanvas;
     let perspCoords: Array<{x:number; y:number; flatY:number; ele:number}> = [];
 
-    if (preloadRef.current) {
+    if (preloadRef.current && format === '9:16') {
       tiltCanvas = preloadRef.current.tiltCanvas;
       perspCoords = preloadRef.current.coords;
     } else {
@@ -504,19 +512,54 @@ export default function ActivityDetail() {
     } catch { /* audio non supportato */ }
 
     // ── MediaRecorder (video + audio opzionale) ───────────────────────────────
-    const videoStream = canvas.captureStream(fps);
+    let videoStream: MediaStream;
+    try {
+      videoStream = canvas.captureStream(fps);
+    } catch (err) {
+      console.error("captureStream failed:", err);
+      setReelState("idle");
+      return;
+    }
+
     const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
     if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
     const combinedStream = new MediaStream(tracks);
-    const recorder = new MediaRecorder(combinedStream, { mimeType: reelMimeType, videoBitsPerSecond: BITRATE });
+
+    let recorder: MediaRecorder;
+    try {
+      const recOpts: MediaRecorderOptions = { videoBitsPerSecond: BITRATE };
+      if (reelMimeType) recOpts.mimeType = reelMimeType;
+      recorder = new MediaRecorder(combinedStream, recOpts);
+    } catch (err) {
+      console.error("MediaRecorder init failed:", err);
+      setReelState("idle");
+      return;
+    }
+
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onerror = (e) => {
+      console.error("MediaRecorder error:", e);
+      setReelState("idle");
+    };
     recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: reelMimeType.split(";")[0] });
+      if (chunks.length === 0) {
+        console.error("No video chunks recorded");
+        setReelState("idle");
+        return;
+      }
+      const blobType = reelMimeType.split(";")[0] || "video/webm";
+      const blob = new Blob(chunks, { type: blobType });
       setReelUrl(URL.createObjectURL(blob));
       setReelState("done");
     };
-    recorder.start();
+    try {
+      recorder.start(200); // 200ms timeslice for better cross-browser compat
+    } catch (err) {
+      console.error("recorder.start failed:", err);
+      setReelState("idle");
+      return;
+    }
 
     // ── Draw helpers ─────────────────────────────────────────────────────────
     const drawMapBg = () => {
@@ -663,74 +706,89 @@ export default function ActivityDetail() {
       ctx.restore();
     };
 
+    // Scale stats panel to available area (9:16 → 538px tall, 16:9 → 302px tall)
+    const STATS_H = H - STATS_Y;
+    const S = Math.min(W / 1080, STATS_H / 538); // uniform scale factor
+    const PAD = Math.round(60 * S);
+
     const drawStats = (rawT: number, upTo: number) => {
       ctx.fillStyle = "#0a0a0a";
-      ctx.fillRect(0, STATS_Y, W, H - STATS_Y);
+      ctx.fillRect(0, STATS_Y, W, STATS_H);
       ctx.fillStyle = "#E11D48";
-      ctx.fillRect(0, STATS_Y, W, 4);
+      ctx.fillRect(0, STATS_Y, W, Math.max(3, Math.round(4 * S)));
 
       ctx.textAlign = "left";
       ctx.fillStyle = "#E11D48";
-      ctx.font = "bold 72px Inter,system-ui,sans-serif";
-      ctx.fillText("RunReel", 80, STATS_Y + 108);
+      ctx.font = `bold ${Math.round(72 * S)}px Inter,system-ui,sans-serif`;
+      ctx.fillText("RunReel", PAD, STATS_Y + Math.round(108 * S));
 
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 50px Inter,system-ui,sans-serif";
-      const name = activity.name.length > 26 ? activity.name.slice(0, 25) + "…" : activity.name;
-      ctx.fillText(name, 80, STATS_Y + 180);
+      ctx.font = `bold ${Math.round(50 * S)}px Inter,system-ui,sans-serif`;
+      const nameMax = Math.round(26 * (W / 1080));
+      const name = activity.name.length > nameMax ? activity.name.slice(0, nameMax - 1) + "…" : activity.name;
+      ctx.fillText(name, PAD, STATS_Y + Math.round(180 * S));
 
       ctx.globalAlpha = Math.min(1, rawT * 4);
+      const CW = Math.round(455 * S), CH = Math.round(120 * S);
+      const GAP = Math.round(10 * S);
+      const col2X = PAD + CW + GAP;
       const card = (x: number, y: number, cw: number, ch: number, big: string, small: string) => {
         ctx.fillStyle = "rgba(255,255,255,0.10)";
-        ctx.beginPath(); ctx.roundRect(x, y, cw, ch, 16); ctx.fill();
-        ctx.fillStyle = "#fff"; ctx.font = "bold 46px Inter,system-ui,sans-serif";
-        ctx.fillText(big, x + 24, y + 66);
-        ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.font = "30px Inter,system-ui,sans-serif";
-        ctx.fillText(small, x + 24, y + 104);
+        ctx.beginPath(); ctx.roundRect(x, y, cw, ch, Math.round(16 * S)); ctx.fill();
+        ctx.fillStyle = "#fff"; ctx.font = `bold ${Math.round(46 * S)}px Inter,system-ui,sans-serif`;
+        ctx.fillText(big, x + Math.round(24 * S), y + Math.round(66 * S));
+        ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.font = `${Math.round(30 * S)}px Inter,system-ui,sans-serif`;
+        ctx.fillText(small, x + Math.round(24 * S), y + Math.round(104 * S));
       };
       const pace = activity.avgPaceSecPerKm ?? 0;
       const dur = activity.durationSecs ?? 0;
-      card(60, STATS_Y + 210, 455, 120, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
-      card(565, STATS_Y + 210, 455, 120, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
-      card(60, STATS_Y + 350, 455, 120, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
-      // Elevation: show current altitude if available, else gain
+      const row1Y = STATS_Y + Math.round(210 * S);
+      const row2Y = STATS_Y + Math.round(350 * S);
+      card(PAD,  row1Y, CW, CH, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
+      card(col2X, row1Y, CW, CH, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
+      card(PAD,  row2Y, CW, CH, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
       const curEle = perspCoords[Math.min(upTo - 1, perspCoords.length - 1)]?.ele ?? 0;
       const hasEleData = perspCoords.some(c => c.ele > 0);
-      card(565, STATS_Y + 350, 455, 120,
+      card(col2X, row2Y, CW, CH,
         hasEleData ? `${Math.round(curEle)} m` : `+${Math.round(activity.elevationGainM ?? 0)} m`,
         hasEleData ? "quota" : "dislivello"
       );
       ctx.globalAlpha = 1;
-      // Barra progresso
-      ctx.fillStyle = "rgba(255,255,255,0.12)";
-      ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, W - 120, 10, 5); ctx.fill();
-      ctx.fillStyle = "#E11D48";
-      ctx.beginPath(); ctx.roundRect(60, STATS_Y + 500, (W - 120) * rawT, 10, 5); ctx.fill();
 
-      // Mini elevation bar (spark line) below progress
+      // Barra progresso
+      const BAR_Y0 = STATS_Y + Math.round(500 * S);
+      ctx.fillStyle = "rgba(255,255,255,0.12)";
+      ctx.beginPath(); ctx.roundRect(PAD, BAR_Y0, W - PAD * 2, Math.round(10 * S), Math.round(5 * S)); ctx.fill();
+      ctx.fillStyle = "#E11D48";
+      ctx.beginPath(); ctx.roundRect(PAD, BAR_Y0, (W - PAD * 2) * rawT, Math.round(10 * S), Math.round(5 * S)); ctx.fill();
+
+      // Mini sparkline altimetrico
       if (hasEleData && perspCoords.length > 1) {
-        const BAR_X = 60, BAR_W = W - 120, BAR_Y = STATS_Y + 525, BAR_H = 32;
-        const allEles2 = perspCoords.map(c => c.ele);
-        const eMin = Math.min(...allEles2), eMax = Math.max(...allEles2), eRng = eMax - eMin || 1;
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        ctx.fillStyle = "rgba(255,255,255,0.06)";
-        ctx.beginPath(); ctx.roundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 4); ctx.fill();
-        // Filled area under sparkline
-        ctx.beginPath();
-        perspCoords.forEach((c, i) => {
-          const sx = BAR_X + (i / (perspCoords.length - 1)) * BAR_W;
-          const sy = BAR_Y + BAR_H - ((c.ele - eMin) / eRng) * BAR_H;
-          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-        });
-        ctx.lineTo(BAR_X + BAR_W, BAR_Y + BAR_H); ctx.lineTo(BAR_X, BAR_Y + BAR_H); ctx.closePath();
-        ctx.fillStyle = "rgba(225,29,72,0.55)"; ctx.fill();
-        // Runner position indicator on sparkline
-        const pIdx = Math.min(upTo - 1, perspCoords.length - 1);
-        const sx = BAR_X + (pIdx / (perspCoords.length - 1)) * BAR_W;
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(sx, BAR_Y + BAR_H / 2, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.restore();
+        const SP_Y = BAR_Y0 + Math.round(18 * S);
+        const SP_H = Math.round(32 * S);
+        if (SP_Y + SP_H <= H - 4) {
+          const BAR_X = PAD, BAR_W = W - PAD * 2;
+          const allEles2 = perspCoords.map(c => c.ele);
+          const eMin = Math.min(...allEles2), eMax = Math.max(...allEles2), eRng = eMax - eMin || 1;
+          ctx.save();
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = "rgba(255,255,255,0.06)";
+          ctx.beginPath(); ctx.roundRect(BAR_X, SP_Y, BAR_W, SP_H, 4); ctx.fill();
+          ctx.beginPath();
+          perspCoords.forEach((c, i) => {
+            const sx = BAR_X + (i / (perspCoords.length - 1)) * BAR_W;
+            const sy = SP_Y + SP_H - ((c.ele - eMin) / eRng) * SP_H;
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+          });
+          ctx.lineTo(BAR_X + BAR_W, SP_Y + SP_H); ctx.lineTo(BAR_X, SP_Y + SP_H); ctx.closePath();
+          ctx.fillStyle = "rgba(225,29,72,0.55)"; ctx.fill();
+          const pIdx = Math.min(upTo - 1, perspCoords.length - 1);
+          const sx = BAR_X + (pIdx / (perspCoords.length - 1)) * BAR_W;
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "white";
+          ctx.beginPath(); ctx.arc(sx, SP_Y + SP_H / 2, Math.round(5 * S), 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        }
       }
     };
 
