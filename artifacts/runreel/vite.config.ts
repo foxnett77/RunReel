@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import cesium from "vite-plugin-cesium";
 
 const rawPort = process.env.PORT;
 
@@ -31,6 +32,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    cesium(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined

@@ -2,9 +2,11 @@ import { useParams, useLocation } from "wouter";
 import { useGetActivity, useDeleteActivity, getListActivitiesQueryKey, getGetStatsSummaryQueryKey, getGetActivityQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLabel } from "@/lib/utils";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
 import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMap3D";
 import { useLang } from "@/lib/i18n";
+
+const CesiumReel = lazy(() => import('@/components/CesiumReel'));
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -168,6 +170,7 @@ export default function ActivityDetail() {
   const [reelState, setReelState] = useState<"idle" | "recording" | "done">("idle");
   const [reelUrl, setReelUrl] = useState<string | null>(null);
   const [reelQuality, setReelQuality] = useState<"standard" | "alta">("standard");
+  const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -817,21 +820,16 @@ export default function ActivityDetail() {
                   disabled={reelState === "recording"}
                   className={`px-3 py-2 transition-colors ${reelQuality === q ? "bg-primary text-white" : "bg-white text-muted-foreground hover:bg-muted"}`}
                 >
-                  {q === "standard" ? "12s" : "HD 15s"}
+                  {q === "standard" ? "12s" : "3D 20s"}
                 </button>
               ))}
             </div>
             <button
-              onClick={() => handleCreateReel().catch(() => setReelState("idle"))}
-              disabled={reelState === "recording"}
-              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60 flex items-center gap-2"
+              onClick={() => setCesiumReelOpen(true)}
+              disabled={cesiumReelOpen}
+              className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-60"
             >
-              {reelState === "recording" ? (
-                <>
-                  <span className="w-3 h-3 rounded-full bg-white animate-pulse inline-block" />
-                  {t("detail_recording")}
-                </>
-              ) : t("detail_create_reel")}
+              {t("detail_create_reel")}
             </button>
             <button
               onClick={handleDelete}
@@ -964,6 +962,33 @@ export default function ActivityDetail() {
 
       {/* Elevation */}
       <ElevationChart points={points} />
+
+      {/* CesiumJS 3D Reel overlay */}
+      {cesiumReelOpen && activity && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-50 bg-black flex items-center justify-center text-white font-bold text-lg">
+            Caricamento CesiumJS…
+          </div>
+        }>
+          <CesiumReel
+            points={(activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? []}
+            activity={{
+              name: activity.name,
+              distanceKm: activity.distanceKm ?? null,
+              durationSecs: activity.durationSecs ?? null,
+              avgPaceSecPerKm: activity.avgPaceSecPerKm ?? null,
+              elevationGainM: activity.elevationGainM ?? null,
+            }}
+            reelDuration={reelQuality === "standard" ? 12 : 20}
+            onComplete={(url, _ext) => {
+              setReelUrl(url);
+              setReelState("done");
+              setCesiumReelOpen(false);
+            }}
+            onCancel={() => setCesiumReelOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

@@ -1,0 +1,155 @@
+Voglio che modifichi la mia app RunReel per generare un reel 3D stile Relive.
+Attualmente la mia app usa una mappa 2D (Leaflet / MapLibre).
+Devi convertirla in una scena 3D completa usando CesiumJS.
+
+Obiettivi principali
+
+1. Caricare un file GPX.
+2. Mostrare il percorso in 3D sopra un terreno reale.
+3. Animare un marker o modello lungo il percorso.
+4. Far seguire la camera al percorso con effetto “drone”.
+5. Registrare il video del canvas e scaricarlo.
+
+
+---
+
+1. Installa e configura CesiumJS
+
+• Aggiungi CesiumJS via CDN oppure npm.
+• Crea un viewer con queste opzioni:
+
+
+const viewer = new Cesium.Viewer("cesiumContainer", {
+  terrainProvider: Cesium.createWorldTerrain(),
+  shouldAnimate: true,
+  baseLayerPicker: false,
+  timeline: false,
+  animation: false
+});
+
+---
+
+2. Caricamento e parsing del GPX
+
+Implementa una funzione che:
+
+• legge il file GPX
+• estrae lat, lon, ele
+• converte ogni punto in Cartesian3:
+
+
+Cesium.Cartesian3.fromDegrees(lon, lat, ele)
+
+---
+
+3. Crea la polyline 3D del percorso
+
+Aggiungi:
+
+viewer.entities.add({
+  polyline: {
+    positions: positionsArray,
+    width: 3,
+    material: Cesium.Color.RED
+  }
+});
+
+---
+
+4. Crea la proprietà animata della posizione
+
+Usa:
+
+const positionProperty = new Cesium.SampledPositionProperty();
+
+Per ogni punto GPX:
+
+positionProperty.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat, ele));
+
+---
+
+5. Aggiungi un modello o marker che segue il percorso
+
+const entity = viewer.entities.add({
+  position: positionProperty,
+  orientation: new Cesium.VelocityOrientationProperty(positionProperty),
+  model: {
+    uri: "path/to/model.glb",
+    scale: 1.0
+  }
+});
+
+Se non hai un modello, usa un billboard.
+
+---
+
+6. Fai seguire la camera al modello
+
+viewer.trackedEntity = entity;
+
+Aggiungi un offset camera tipo drone:
+
+viewer.scene.camera.setView({
+  offset: new Cesium.HeadingPitchRange(
+    Cesium.Math.toRadians(0),
+    Cesium.Math.toRadians(-30),
+    80
+  )
+});
+
+---
+
+7. Gestisci la velocità dell’animazione
+
+Imposta:
+
+viewer.clock.multiplier = speedFactor;
+viewer.clock.shouldAnimate = true;
+
+---
+
+8. Registra il video del canvas
+
+Usa:
+
+const stream = viewer.canvas.captureStream(30);
+const recorder = new MediaRecorder(stream);
+
+Registra, raccogli i chunk e salva il file WebM.
+
+---
+
+9. Aggiungi un pulsante “Generate Reel”
+
+Quando cliccato:
+
+1. Carica GPX
+2. Genera percorso 3D
+3. Avvia animazione
+4. Avvia registrazione
+5. Esporta video
+
+
+---
+
+10. Organizza il codice
+
+Crea questi file:
+
+• `index.html` → container Cesium + pulsanti
+• `main.js` → logica GPX + animazione + registrazione
+• `style.css` → layout semplice
+
+
+---
+
+Risultato atteso
+
+Una scena 3D con:
+
+• terreno reale
+• percorso GPX in 3D
+• camera che segue il tracciato
+• animazione fluida
+• esportazione video
+
