@@ -27,7 +27,7 @@ router.get("/activities", async (req, res): Promise<void> => {
       type: activitiesTable.type,
     })
     .from(activitiesTable)
-    .orderBy(desc(activitiesTable.createdAt));
+    .orderBy(desc(activitiesTable.date), desc(activitiesTable.createdAt));
   res.json(activities);
 });
 
