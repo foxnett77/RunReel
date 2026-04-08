@@ -1,4 +1,4 @@
-const CACHE_VERSION = "runreel-v42";
+const CACHE_VERSION = "runreel-v43";
 const ASSET_CACHE = CACHE_VERSION;
 const TILE_CACHE = "runreel-tiles-v1";
 

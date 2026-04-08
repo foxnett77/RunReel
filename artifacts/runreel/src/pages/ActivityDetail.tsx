@@ -181,11 +181,6 @@ export default function ActivityDetail() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const map3dRef = useRef<AnimatedMap3DHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const preloadRef = useRef<{
-    tiltCanvas: OffscreenCanvas;
-    coords: Array<{x:number; y:number; flatY:number; ele:number}>;
-    hasElev: boolean;
-  } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renaming_busy, setRenamingBusy] = useState(false);
@@ -220,104 +215,6 @@ export default function ActivityDetail() {
     }
   };
 
-  // ── Preload tile + perspective + elevation transform ────────────────────────
-  useEffect(() => {
-    if (!activity) return;
-    const pts = (activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? [];
-    if (pts.length < 2) return;
-    preloadRef.current = null;
-    const W = 1080, H = 1920, MAP_H = Math.round(H * 0.72);
-    const lon2t = (lon: number, z: number) => (lon + 180) / 360 * Math.pow(2, z);
-    const lat2t = (lat: number, z: number) => {
-      const r = lat * Math.PI / 180;
-      return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
-    };
-    const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
-    let zoom = 12;
-    for (let z = 16; z >= 8; z--) {
-      if (lon2t(maxLon, z) - lon2t(minLon, z) <= 7 &&
-          lat2t(minLat, z) - lat2t(maxLat, z) <= 7) { zoom = z; break; }
-    }
-    const PAD_T = 0.9;
-    const tx0 = lon2t(minLon, zoom) - PAD_T, tx1 = lon2t(maxLon, zoom) + PAD_T;
-    const ty0 = lat2t(maxLat, zoom) - PAD_T, ty1 = lat2t(minLat, zoom) + PAD_T;
-    const TILE_PX = 256;
-    const vpW = (tx1 - tx0) * TILE_PX, vpH = (ty1 - ty0) * TILE_PX;
-    const tileScale = Math.min(W / vpW, MAP_H / vpH);
-    const mapOffX = (W - vpW * tileScale) / 2, mapOffY = (MAP_H - vpH * tileScale) / 2;
-    const toCanvasX = (lon: number) => mapOffX + (lon2t(lon, zoom) - tx0) * TILE_PX * tileScale;
-    const toCanvasY = (lat: number) => mapOffY + (lat2t(lat, zoom) - ty0) * TILE_PX * tileScale;
-
-    type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
-    const tileImages: TileImg[] = [];
-    const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
-    const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
-    const maxTileIdx = Math.pow(2, zoom);
-    const tilePromises: Promise<void>[] = [];
-    for (let iy = iyMin; iy <= iyMax; iy++) {
-      for (let ix = ixMin; ix <= ixMax; ix++) {
-        if (ix < 0 || iy < 0 || ix >= maxTileIdx || iy >= maxTileIdx) continue;
-        const dx = mapOffX + (ix - tx0) * TILE_PX * tileScale;
-        const dy = mapOffY + (iy - ty0) * TILE_PX * tileScale;
-        const dw = TILE_PX * tileScale, dh = TILE_PX * tileScale;
-        tilePromises.push(new Promise<void>(resolve => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.onload = () => { tileImages.push({ img, dx, dy, dw, dh }); resolve(); };
-          img.onerror = () => resolve();
-          img.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${zoom}/${ix}/${iy}.png`;
-        }));
-      }
-    }
-    Promise.race([Promise.allSettled(tilePromises), new Promise(r => setTimeout(r, 5000))]).then(() => {
-      // Flat map canvas
-      const flat = new OffscreenCanvas(W, MAP_H);
-      const fctx = flat.getContext("2d")!;
-      fctx.fillStyle = "#e8e8e8";
-      fctx.fillRect(0, 0, W, MAP_H);
-      for (const t of tileImages) fctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
-
-      // Perspective warp: strisce orizzontali, top più stretto
-      const tilt = new OffscreenCanvas(W, MAP_H);
-      const tctx = tilt.getContext("2d")!;
-      const STRIPS = 300;
-      const sh = MAP_H / STRIPS;
-      for (let i = 0; i < STRIPS; i++) {
-        const sy = i * sh;
-        const frac = sy / MAP_H;
-        const scale = 0.58 + 0.42 * frac;
-        const dx = (W * (1 - scale)) / 2;
-        tctx.drawImage(flat, 0, sy, W, sh, dx, sy, W * scale, sh);
-      }
-      // Vignette
-      const vg = tctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.32, W / 2, MAP_H / 2, MAP_H * 0.80);
-      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
-      tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
-
-      // Elevation data
-      const elevs = pts.map(p => p.ele ?? 0);
-      const minEle = Math.min(...elevs), maxEle = Math.max(...elevs);
-      const eleRange = maxEle - minEle;
-      const hasElev = eleRange > 1;
-      const MAX_ELEV_PX = 180; // max height in canvas pixels above flat surface
-
-      // Transform coordinates with matching perspective + elevation lift
-      const perspCoords = pts.map((p, i) => {
-        const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
-        const frac = cy / MAP_H;
-        const scale = 0.58 + 0.42 * frac;
-        const ox = (W * (1 - scale)) / 2;
-        const px = ox + cx * scale;
-        const flatY = cy;
-        const elevOffset = hasElev ? ((elevs[i] - minEle) / eleRange) * MAX_ELEV_PX : 0;
-        return { x: px, y: flatY - elevOffset, flatY, ele: elevs[i] };
-      });
-
-      preloadRef.current = { tiltCanvas: tilt, coords: perspCoords, hasElev };
-    });
-  }, [activity?.id]);
 
   const reelMimeType = (() => {
     const candidates = [
@@ -395,18 +292,19 @@ export default function ActivityDetail() {
     const minEle = Math.min(...elevs), maxEle = Math.max(...elevs);
     const eleRange = maxEle - minEle;
     const hasElev = eleRange > 1;
-    const MAX_ELEV_PX = 180;
 
-    // ── Usa mappa precaricata solo se il formato coincide (9:16 a 1080×1920) ──
-    let tiltCanvas: OffscreenCanvas;
-    let perspCoords: Array<{x:number; y:number; flatY:number; ele:number}> = [];
+    // Dislivello positivo cumulativo per ogni punto
+    const cumEleGain: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const prev = i === 0 ? 0 : cumEleGain[i - 1];
+      const gain = i === 0 ? 0 : Math.max(0, elevs[i] - elevs[i - 1]);
+      cumEleGain.push(prev + gain);
+    }
 
-    if (preloadRef.current && format === '9:16') {
-      tiltCanvas = preloadRef.current.tiltCanvas;
-      perspCoords = preloadRef.current.coords;
-    } else {
-      type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
-      const tileImages: TileImg[] = [];
+    // ── Mappa piatta: carica tile ─────────────────────────────────────────────
+    type TileImg = { img: HTMLImageElement; dx: number; dy: number; dw: number; dh: number };
+    const tileImages: TileImg[] = [];
+    {
       const ixMin = Math.floor(tx0), ixMax = Math.ceil(tx1);
       const iyMin = Math.floor(ty0), iyMax = Math.ceil(ty1);
       const maxTileIdx = Math.pow(2, zoom);
@@ -427,36 +325,24 @@ export default function ActivityDetail() {
         }
       }
       await Promise.race([Promise.allSettled(tilePromises), new Promise(r => setTimeout(r, 5000))]);
+    }
 
-      // Build flat canvas then apply perspective warp
-      const flat = new OffscreenCanvas(W, MAP_H);
-      const fctx = flat.getContext("2d")!;
+    // Costruisce canvas piatto con vignette
+    const mapBg = new OffscreenCanvas(W, MAP_H);
+    {
+      const fctx = mapBg.getContext("2d")!;
       fctx.fillStyle = "#e8e8e8"; fctx.fillRect(0, 0, W, MAP_H);
       for (const t of tileImages) fctx.drawImage(t.img, t.dx, t.dy, t.dw, t.dh);
-
-      tiltCanvas = new OffscreenCanvas(W, MAP_H);
-      const tctx = tiltCanvas.getContext("2d")!;
-      const STRIPS = 300, sh = MAP_H / STRIPS;
-      for (let i = 0; i < STRIPS; i++) {
-        const sy = i * sh;
-        const scale = 0.58 + 0.42 * (sy / MAP_H);
-        const dx2 = (W * (1 - scale)) / 2;
-        tctx.drawImage(flat, 0, sy, W, sh, dx2, sy, W * scale, sh);
-      }
-      const vg = tctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.32, W / 2, MAP_H / 2, MAP_H * 0.80);
-      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.30)");
-      tctx.fillStyle = vg; tctx.fillRect(0, 0, W, MAP_H);
-
-      perspCoords = points.map((p, i) => {
-        const cx = toCanvasX(p.lon), cy = toCanvasY(p.lat);
-        const scale = 0.58 + 0.42 * (cy / MAP_H);
-        const ox = (W * (1 - scale)) / 2;
-        const px = ox + cx * scale;
-        const flatY = cy;
-        const elevOffset = hasElev ? ((elevs[i] - minEle) / eleRange) * MAX_ELEV_PX : 0;
-        return { x: px, y: flatY - elevOffset, flatY, ele: elevs[i] };
-      });
+      const vg = fctx.createRadialGradient(W / 2, MAP_H / 2, MAP_H * 0.28, W / 2, MAP_H / 2, MAP_H * 0.75);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.22)");
+      fctx.fillStyle = vg; fctx.fillRect(0, 0, W, MAP_H);
     }
+
+    // Coordinate flat (no warp prospettico, no offset elevazione)
+    const perspCoords = points.map((p, i) => {
+      const x = toCanvasX(p.lon), y = toCanvasY(p.lat);
+      return { x, y, flatY: y, ele: elevs[i] };
+    });
 
     // ── Canvas setup ─────────────────────────────────────────────────────────
     const canvas = canvasRef.current!;
@@ -464,55 +350,103 @@ export default function ActivityDetail() {
     canvas.height = H;
     const ctx = canvas.getContext("2d")!;
 
-    // ── Musica sintetizzata via Web Audio (prima del recorder) ───────────────
+    // ── Musica rock sintetizzata via Web Audio ────────────────────────────────
     let audioDest: MediaStreamAudioDestinationNode | null = null;
     try {
       const audioCtx = new AudioContext();
       audioDest = audioCtx.createMediaStreamDestination();
-      const bpm = 130, beatSec = 60 / bpm;
-      const totalBeats = Math.ceil(DURATION_MS / 1000 / beatSec) + 4;
-      const t0 = audioCtx.currentTime + 0.08;
+      // BPM e tonalità variano ad ogni video
+      const bpm = 142 + Math.floor(Math.random() * 20);   // 142–161
+      const beatSec = 60 / bpm;
+      const totalBeats = Math.ceil(DURATION_MS / 1000 / beatSec) + 8;
+      const t0 = audioCtx.currentTime + 0.05;
+      // Tonalità base casuale (frequenza root tra 5 opzioni rock)
+      const roots = [110, 116.5, 123.5, 130.8, 138.6];
+      const root = roots[Math.floor(Math.random() * roots.length)];
+
+      // Compressore master
+      const comp = audioCtx.createDynamicsCompressor();
+      comp.threshold.value = -18; comp.knee.value = 10;
+      comp.ratio.value = 6; comp.attack.value = 0.002; comp.release.value = 0.12;
+      comp.connect(audioDest);
 
       const kick = (t: number) => {
         const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-        o.connect(g); g.connect(audioDest!);
-        o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(0.01, t + 0.45);
-        g.gain.setValueAtTime(1.1, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
-        o.start(t); o.stop(t + 0.5);
+        o.connect(g); g.connect(comp);
+        o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(0.01, t + 0.55);
+        g.gain.setValueAtTime(2.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+        o.start(t); o.stop(t + 0.6);
+        // Sub layer
+        const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
+        o2.type = "sine"; o2.frequency.setValueAtTime(55, t); o2.frequency.exponentialRampToValueAtTime(20, t + 0.2);
+        g2.gain.setValueAtTime(1.5, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+        o2.connect(g2); g2.connect(comp); o2.start(t); o2.stop(t + 0.25);
       };
+
       const snare = (t: number) => {
-        const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.12), audioCtx.sampleRate);
+        const len = Math.floor(audioCtx.sampleRate * 0.18);
+        const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
         const d = buf.getChannelData(0);
-        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.2);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
         const src = audioCtx.createBufferSource(); src.buffer = buf;
-        const f = audioCtx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 2800; f.Q.value = 0.7;
-        const g = audioCtx.createGain(); g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-        src.connect(f); f.connect(g); g.connect(audioDest!); src.start(t);
+        const bp = audioCtx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 3400; bp.Q.value = 0.5;
+        const g = audioCtx.createGain(); g.gain.setValueAtTime(1.4, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        src.connect(bp); bp.connect(g); g.connect(comp); src.start(t);
+        // Snare tone
+        const o = audioCtx.createOscillator(), og = audioCtx.createGain();
+        o.frequency.value = 200; o.connect(og); og.connect(comp);
+        og.gain.setValueAtTime(0.4, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+        o.start(t); o.stop(t + 0.1);
       };
-      const hihat = (t: number, vol: number) => {
-        const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.04), audioCtx.sampleRate);
-        const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+
+      const hihat = (t: number, vol: number, open = false) => {
+        const dur = open ? 0.18 : 0.035;
+        const len = Math.floor(audioCtx.sampleRate * dur);
+        const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
         const src = audioCtx.createBufferSource(); src.buffer = buf;
-        const f = audioCtx.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 9000;
-        const g = audioCtx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-        src.connect(f); f.connect(g); g.connect(audioDest!); src.start(t);
+        const hp = audioCtx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 10000;
+        const g = audioCtx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        src.connect(hp); hp.connect(g); g.connect(comp); src.start(t);
       };
-      const synth = (t: number, freq: number) => {
-        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-        o.type = "sawtooth"; o.frequency.value = freq;
-        const f = audioCtx.createBiquadFilter(); f.type = "lowpass"; f.frequency.setValueAtTime(2200, t); f.frequency.exponentialRampToValueAtTime(400, t + 0.25);
-        o.connect(f); f.connect(g); g.connect(audioDest!);
-        g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
-        o.start(t); o.stop(t + 0.3);
+
+      // Chitarra power chord: fondamentale + quinta + ottava
+      const guitar = (t: number, freq: number, dur = 0.22) => {
+        [freq, freq * 1.498, freq * 2].forEach((f, fi) => {
+          const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+          o.type = "sawtooth"; o.frequency.value = f;
+          // Distorsione via waveshaper
+          const ws = audioCtx.createWaveShaper();
+          const n = 256, curve = new Float32Array(n);
+          const k = 80;
+          for (let i = 0; i < n; i++) { const x = (2 * i) / n - 1; curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x)); }
+          ws.curve = curve;
+          const lp = audioCtx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 2800;
+          o.connect(ws); ws.connect(lp); lp.connect(g); g.connect(comp);
+          const vol = fi === 0 ? 0.28 : 0.18;
+          g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+          o.start(t); o.stop(t + dur + 0.05);
+        });
       };
-      const bassline = [220, 220, 165, 196, 220, 246, 220, 196];
+
+      // Progressione power chord casuale in 4/4 rock
+      const progressions = [
+        [1, 1, 0.75, 0.875],
+        [1, 0.75, 0.668, 0.75],
+        [1, 1, 0.891, 0.75],
+      ];
+      const prog = progressions[Math.floor(Math.random() * progressions.length)];
+
       for (let b = 0; b < totalBeats; b++) {
         const t = t0 + b * beatSec;
         const inBar = b % 4;
-        if (inBar === 0 || inBar === 2) kick(t);
-        if (inBar === 1 || inBar === 3) snare(t);
-        hihat(t, 0.3); hihat(t + beatSec * 0.5, 0.18);
-        synth(t, bassline[b % bassline.length]);
+        if (inBar === 0) { kick(t); guitar(t, root * prog[0], 0.55); }
+        if (inBar === 1) { snare(t); hihat(t + beatSec * 0.5, 0.35); }
+        if (inBar === 2) { kick(t); guitar(t, root * prog[2], 0.55); hihat(t, 0.22, true); }
+        if (inBar === 3) { snare(t); kick(t + beatSec * 0.75); guitar(t, root * prog[3], 0.4); }
+        hihat(t, 0.28);
+        if (b % 8 === 0) hihat(t, 0.5, true); // crash ogni 2 misure
       }
     } catch { /* audio non supportato */ }
 
@@ -568,7 +502,7 @@ export default function ActivityDetail() {
     const drawMapBg = () => {
       ctx.fillStyle = "#e8e8e8";
       ctx.fillRect(0, 0, W, MAP_H);
-      ctx.drawImage(tiltCanvas, 0, 0, W, MAP_H);
+      ctx.drawImage(mapBg, 0, 0, W, MAP_H);
     };
 
     // Pattern: puntini fine stile tessuto sportivo
@@ -585,21 +519,21 @@ export default function ActivityDetail() {
     };
 
     const drawGhost = () => {
-      // Shadow on flat surface (dashed)
+      // Traccia ghost tratteggiata (visibile sotto la traccia animata)
       ctx.save();
-      ctx.strokeStyle = "rgba(0,0,0,0.18)";
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.20)";
+      ctx.lineWidth = 4;
       ctx.lineJoin = "round"; ctx.lineCap = "round";
-      ctx.setLineDash([10, 18]);
+      ctx.setLineDash([14, 20]);
       ctx.beginPath();
-      perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.flatY) : ctx.lineTo(c.x, c.flatY));
+      perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.restore();
-      // Elevated ghost route
+      // Alone rosso sottile (indicatore percorso totale)
       ctx.save();
-      ctx.strokeStyle = "rgba(225,29,72,0.22)";
-      ctx.lineWidth = 8;
+      ctx.strokeStyle = "rgba(225,29,72,0.18)";
+      ctx.lineWidth = 10;
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       ctx.beginPath();
       perspCoords.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
@@ -607,82 +541,51 @@ export default function ActivityDetail() {
       ctx.restore();
     };
 
-    const drawProgress = (upTo: number) => {
+    // Colore segmento per quota (verde→arancio→rosso)
+    const allEles = perspCoords.map(c => c.ele);
+    const globalMinEle = Math.min(...allEles), globalMaxEle = Math.max(...allEles);
+    const globalEleRange = globalMaxEle - globalMinEle || 1;
+    const eleColor = (e: number) => {
+      const t = (e - globalMinEle) / globalEleRange;
+      if (t < 0.5) {
+        const r = Math.round(52 + (255 - 52) * (t * 2));
+        const g = Math.round(211 - (211 - 100) * (t * 2));
+        return `rgb(${r},${g},50)`;
+      }
+      const r = 255, g = Math.round(100 * (1 - (t - 0.5) * 2));
+      return `rgb(${r},${g},30)`;
+    };
+
+    const drawProgress = (upTo: number, glowBoost = 1) => {
       if (upTo < 2) return;
       const sub = perspCoords.slice(0, upTo);
 
-      // ── Wall quads: filled polygon from flatY up to elevated y ───────────────
-      for (let i = 1; i < sub.length; i++) {
-        const a = sub[i - 1], b = sub[i];
-        if (a.flatY === a.y && b.flatY === b.y) continue; // no elevation, skip
-        const wallGrad = ctx.createLinearGradient(a.x, Math.min(a.y, b.y), a.x, Math.max(a.flatY, b.flatY));
-        wallGrad.addColorStop(0, "rgba(225,29,72,0.55)");
-        wallGrad.addColorStop(1, "rgba(80,0,20,0.05)");
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.flatY);
-        ctx.lineTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.lineTo(b.x, b.flatY);
-        ctx.closePath();
-        ctx.fillStyle = wallGrad;
-        ctx.fill();
-      }
-
-      // ── Floor shadow line ────────────────────────────────────────────────────
+      // Glow esterno
       ctx.save();
-      ctx.strokeStyle = "rgba(0,0,0,0.12)";
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round"; ctx.lineCap = "round";
-      ctx.beginPath();
-      sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.flatY) : ctx.lineTo(c.x, c.flatY));
-      ctx.stroke();
-      ctx.restore();
-
-      // ── Elevated route (glow + white core) ──────────────────────────────────
-      // Outer glow
-      ctx.save();
-      ctx.shadowBlur = 44; ctx.shadowColor = "#E11D48";
-      ctx.strokeStyle = "rgba(225,29,72,0.32)"; ctx.lineWidth = 24;
+      ctx.shadowBlur = 36 * glowBoost; ctx.shadowColor = "#E11D48";
+      ctx.strokeStyle = `rgba(225,29,72,${0.28 * glowBoost})`; ctx.lineWidth = 22;
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       ctx.beginPath();
       sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
       ctx.stroke();
       ctx.restore();
 
-      // Elevation-colored segments (green→orange→red by normalized elevation)
-      const eleMin = perspCoords[0]?.ele ?? 0;
-      const eleMax = perspCoords[perspCoords.length - 1]?.ele ?? 0;
-      const allEles = perspCoords.map(c => c.ele);
-      const globalMinEle = Math.min(...allEles), globalMaxEle = Math.max(...allEles);
-      const globalEleRange = globalMaxEle - globalMinEle || 1;
-      const eleColor = (e: number) => {
-        const t = (e - globalMinEle) / globalEleRange;
-        if (t < 0.5) {
-          const r = Math.round(52 + (255 - 52) * (t * 2));
-          const g = Math.round(211 - (211 - 100) * (t * 2));
-          return `rgb(${r},${g},50)`;
-        }
-        const r = 255, g = Math.round(100 * (1 - (t - 0.5) * 2));
-        return `rgb(${r},${g},30)`;
-      };
-      void eleMin; void eleMax; // suppress unused warning
+      // Segmenti colorati per quota
       ctx.save();
-      ctx.lineWidth = 12; ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.lineWidth = 14; ctx.lineJoin = "round"; ctx.lineCap = "round";
       for (let i = 1; i < sub.length; i++) {
         const a = sub[i - 1], b = sub[i];
         const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
         grad.addColorStop(0, eleColor(a.ele));
         grad.addColorStop(1, eleColor(b.ele));
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
         ctx.strokeStyle = grad;
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
       ctx.restore();
 
-      // White core
+      // Nucleo bianco
       ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.65)"; ctx.lineWidth = 3.5;
+      ctx.strokeStyle = `rgba(255,255,255,${0.7 * Math.min(glowBoost, 1)})`; ctx.lineWidth = 4;
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       ctx.beginPath();
       sub.forEach((c, i) => i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y));
@@ -750,12 +653,12 @@ export default function ActivityDetail() {
       card(PAD,  row1Y, CW, CH, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
       card(col2X, row1Y, CW, CH, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
       card(PAD,  row2Y, CW, CH, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
-      const curEle = perspCoords[Math.min(upTo - 1, perspCoords.length - 1)]?.ele ?? 0;
       const hasEleData = perspCoords.some(c => c.ele > 0);
-      card(col2X, row2Y, CW, CH,
-        hasEleData ? `${Math.round(curEle)} m` : `+${Math.round(activity.elevationGainM ?? 0)} m`,
-        hasEleData ? "quota" : "dislivello"
-      );
+      const curGain = cumEleGain[Math.min(upTo - 1, cumEleGain.length - 1)] ?? 0;
+      const gainStr = hasEleData
+        ? `+${Math.round(curGain)} m`
+        : `+${Math.round(activity.elevationGainM ?? 0)} m`;
+      card(col2X, row2Y, CW, CH, gainStr, "dislivello ↑");
       ctx.globalAlpha = 1;
 
       // Barra progresso
@@ -798,35 +701,77 @@ export default function ActivityDetail() {
     // ── Animation loop ───────────────────────────────────────────────────────
     const ease = (t: number) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
     let frame = 0;
+    const FINALE = Math.round(fps * 1.8); // 1.8s di enfasi finale
+    let finaleFrame = 0;
+    let inFinale = false;
+    const N = perspCoords.length;
 
     const animate = () => {
-      const rawT = frame / TOTAL_FRAMES;
-      const upTo = Math.max(2, Math.round(ease(rawT) * (perspCoords.length - 1)) + 1);
-      drawMapBg();
-      drawPattern();
-      drawGhost();
-      drawProgress(upTo);
-      drawRunner(frame, upTo);
-      drawStats(rawT, upTo);
-      frame++;
-      if (recorder) {
-        setReelProgress(rawT);
-      } else {
-        setIosPreviewProgress(rawT);
-      }
-      if (frame < TOTAL_FRAMES) {
-        requestAnimationFrame(animate);
-      } else {
-        if (recorder) {
-          recorder.stop();
+      if (!inFinale) {
+        // rawT va da 0 a 1 incluso (l'ultimo frame usa t=1 → upTo=N)
+        const rawT = Math.min(1, frame / TOTAL_FRAMES);
+        const upTo = frame >= TOTAL_FRAMES
+          ? N
+          : Math.max(2, Math.round(ease(rawT) * (N - 1)) + 1);
+        drawMapBg();
+        drawPattern();
+        drawGhost();
+        drawProgress(upTo);
+        drawRunner(frame, Math.min(upTo, N - 1));
+        drawStats(rawT, upTo);
+        if (recorder) setReelProgress(rawT);
+        else setIosPreviewProgress(rawT);
+        frame++;
+        if (frame <= TOTAL_FRAMES) {
+          requestAnimationFrame(animate);
         } else {
-          // iOS: animazione conclusa — torna allo stato idle
-          setIosPreviewProgress(1);
-          setTimeout(() => {
-            setIosPreviewMode(false);
-            setIosPreviewProgress(0);
-            setReelState("idle");
-          }, 800);
+          inFinale = true;
+          requestAnimationFrame(animate);
+        }
+      } else {
+        // Fase finale: traccia completa + effetto glow pulsante sull'endpoint
+        const ft = finaleFrame / FINALE;
+        const pulse = 1 + Math.sin(ft * Math.PI * 5) * 0.55;
+        const endPt = perspCoords[N - 1];
+        drawMapBg();
+        drawPattern();
+        drawProgress(N, pulse);
+        // Anelli espandenti dal punto finale
+        if (endPt) {
+          for (let r = 0; r < 3; r++) {
+            const rPhase = (ft * 1.2 + r / 3) % 1;
+            const rRadius = rPhase * 55 * S;
+            const rAlpha = (1 - rPhase) * 0.85;
+            ctx.save();
+            ctx.strokeStyle = `rgba(225,29,72,${rAlpha})`;
+            ctx.lineWidth = Math.max(1, 4 * S * (1 - rPhase));
+            ctx.beginPath(); ctx.arc(endPt.x, endPt.y, rRadius, 0, Math.PI * 2);
+            ctx.stroke(); ctx.restore();
+          }
+          // Punto fermo luminoso
+          ctx.save();
+          ctx.fillStyle = "#fff";
+          ctx.shadowBlur = 18 * pulse; ctx.shadowColor = "#E11D48";
+          ctx.beginPath(); ctx.arc(endPt.x, endPt.y, 9 * S, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+        }
+        drawStats(1, N);
+        if (recorder) setReelProgress(1);
+        else setIosPreviewProgress(1);
+        finaleFrame++;
+        if (finaleFrame < FINALE) {
+          requestAnimationFrame(animate);
+        } else {
+          if (recorder) {
+            recorder.stop();
+          } else {
+            setIosPreviewProgress(1);
+            setTimeout(() => {
+              setIosPreviewMode(false);
+              setIosPreviewProgress(0);
+              setReelState("idle");
+            }, 800);
+          }
         }
       }
     };
