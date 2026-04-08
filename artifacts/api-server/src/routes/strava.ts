@@ -66,7 +66,9 @@ router.get("/strava/status", async (_req, res): Promise<void> => {
 // ── GET /api/strava/connect ───────────────────────────────────────────────────
 router.get("/strava/connect", (req, res): void => {
   if (!CLIENT_ID) { res.status(503).json({ error: "STRAVA_CLIENT_ID not configured" }); return; }
-  const redirectUri = `${getRedirectBase(req)}/api/strava/callback`;
+  // Callback goes to the FRONTEND route /strava/callback (no /api prefix)
+  // so the registered domain on Strava is just the main app domain
+  const redirectUri = `${getRedirectBase(req)}/strava/callback`;
   const url = new URL("https://www.strava.com/oauth/authorize");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("redirect_uri", redirectUri);
@@ -76,10 +78,10 @@ router.get("/strava/connect", (req, res): void => {
   res.redirect(url.toString());
 });
 
-// ── GET /api/strava/callback ──────────────────────────────────────────────────
-router.get("/strava/callback", async (req, res): Promise<void> => {
-  const { code, error } = req.query as Record<string, string>;
-  if (error || !code) { res.redirect("/#strava=error"); return; }
+// ── POST /api/strava/exchange — called by frontend after receiving OAuth code ─
+router.post("/strava/exchange", async (req, res): Promise<void> => {
+  const { code } = req.body as { code?: string };
+  if (!code) { res.status(400).json({ error: "Missing code" }); return; }
   try {
     const tokenRes = await fetch("https://www.strava.com/oauth/token", {
       method: "POST",
@@ -91,7 +93,11 @@ router.get("/strava/callback", async (req, res): Promise<void> => {
         grant_type: "authorization_code",
       }),
     });
-    if (!tokenRes.ok) throw new Error("Token exchange failed");
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      console.error("Strava token exchange error:", errText);
+      throw new Error("Token exchange failed");
+    }
     const data = await tokenRes.json() as {
       access_token: string; refresh_token: string; expires_at: number;
       athlete: { id: number; firstname: string; lastname: string };
@@ -107,10 +113,10 @@ router.get("/strava/callback", async (req, res): Promise<void> => {
       target: stravaConnectionsTable.athleteId,
       set: { accessToken: data.access_token, refreshToken: data.refresh_token, expiresAt: data.expires_at, athleteName },
     });
-    res.redirect("/#strava=ok");
+    res.json({ ok: true, athleteName });
   } catch (e) {
-    console.error("Strava callback error:", e);
-    res.redirect("/#strava=error");
+    console.error("Strava exchange error:", e);
+    res.status(500).json({ error: "Exchange failed" });
   }
 });
 

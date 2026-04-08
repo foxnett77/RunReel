@@ -9,6 +9,7 @@ import ActivityDetail from "@/pages/ActivityDetail";
 import Live from "@/pages/Live";
 import Upload from "@/pages/Upload";
 import NotFound from "@/pages/not-found";
+import StravaCallback from "@/pages/StravaCallback";
 import { LangProvider } from "@/lib/i18n";
 
 const queryClient = new QueryClient({
@@ -29,6 +30,7 @@ function Router() {
         <Route path="/activities/:id" component={ActivityDetail} />
         <Route path="/live" component={Live} />
         <Route path="/upload" component={Upload} />
+        <Route path="/strava/callback" component={StravaCallback} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
