@@ -172,6 +172,8 @@ export default function ActivityDetail() {
   const [reelUrl, setReelUrl] = useState<string | null>(null);
   const [reelOptionsOpen, setReelOptionsOpen] = useState(false);
   const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
+  const [iosPreviewMode, setIosPreviewMode] = useState(false);
+  const [iosPreviewProgress, setIosPreviewProgress] = useState(0);
   const [reelDuration, setReelDuration] = useState(20);
   const [reelFormat, setReelFormat] = useState<'9:16' | '16:9'>('9:16');
   const [reelQualityOpt, setReelQualityOpt] = useState<'standard' | 'hd'>('standard');
@@ -511,54 +513,52 @@ export default function ActivityDetail() {
       }
     } catch { /* audio non supportato */ }
 
-    // ── MediaRecorder (video + audio opzionale) ───────────────────────────────
-    let videoStream: MediaStream;
-    try {
-      videoStream = canvas.captureStream(fps);
-    } catch (err) {
-      console.error("captureStream failed:", err);
-      setReelState("idle");
-      return;
-    }
-
-    const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
-    if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
-    const combinedStream = new MediaStream(tracks);
-
-    let recorder: MediaRecorder;
-    try {
-      const recOpts: MediaRecorderOptions = { videoBitsPerSecond: BITRATE };
-      if (reelMimeType) recOpts.mimeType = reelMimeType;
-      recorder = new MediaRecorder(combinedStream, recOpts);
-    } catch (err) {
-      console.error("MediaRecorder init failed:", err);
-      setReelState("idle");
-      return;
-    }
-
+    // ── MediaRecorder (video + audio) — solo se captureStream disponibile ─────
+    const captureOk = typeof (canvas as { captureStream?: unknown }).captureStream === 'function';
+    let recorder: MediaRecorder | null = null;
     const chunks: Blob[] = [];
-    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onerror = (e) => {
-      console.error("MediaRecorder error:", e);
-      setReelState("idle");
-    };
-    recorder.onstop = () => {
-      if (chunks.length === 0) {
-        console.error("No video chunks recorded");
+
+    if (captureOk) {
+      let videoStream: MediaStream;
+      try {
+        videoStream = (canvas as HTMLCanvasElement & { captureStream: (fps: number) => MediaStream }).captureStream(fps);
+      } catch (err) {
+        console.error("captureStream failed:", err);
         setReelState("idle");
         return;
       }
-      const blobType = reelMimeType.split(";")[0] || "video/webm";
-      const blob = new Blob(chunks, { type: blobType });
-      setReelUrl(URL.createObjectURL(blob));
-      setReelState("done");
-    };
-    try {
-      recorder.start(200); // 200ms timeslice for better cross-browser compat
-    } catch (err) {
-      console.error("recorder.start failed:", err);
-      setReelState("idle");
-      return;
+      const tracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+      if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
+      const combinedStream = new MediaStream(tracks);
+      try {
+        const recOpts: MediaRecorderOptions = { videoBitsPerSecond: BITRATE };
+        if (reelMimeType) recOpts.mimeType = reelMimeType;
+        recorder = new MediaRecorder(combinedStream, recOpts);
+      } catch (err) {
+        console.error("MediaRecorder init failed:", err);
+        setReelState("idle");
+        return;
+      }
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onerror = () => setReelState("idle");
+      recorder.onstop = () => {
+        if (chunks.length === 0) { setReelState("idle"); return; }
+        const blobType = reelMimeType.split(";")[0] || "video/webm";
+        const blob = new Blob(chunks, { type: blobType });
+        setReelUrl(URL.createObjectURL(blob));
+        setReelState("done");
+      };
+      try {
+        recorder.start(200);
+      } catch (err) {
+        console.error("recorder.start failed:", err);
+        setReelState("idle");
+        return;
+      }
+    } else {
+      // iOS Safari: nessuna registrazione — mostra canvas fullscreen per Registrazione Schermo
+      setIosPreviewMode(true);
+      setIosPreviewProgress(0);
     }
 
     // ── Draw helpers ─────────────────────────────────────────────────────────
@@ -806,8 +806,22 @@ export default function ActivityDetail() {
       drawRunner(frame, upTo);
       drawStats(rawT, upTo);
       frame++;
-      if (frame < TOTAL_FRAMES) requestAnimationFrame(animate);
-      else recorder.stop();
+      if (!recorder) setIosPreviewProgress(rawT);
+      if (frame < TOTAL_FRAMES) {
+        requestAnimationFrame(animate);
+      } else {
+        if (recorder) {
+          recorder.stop();
+        } else {
+          // iOS: animazione conclusa — torna allo stato idle
+          setIosPreviewProgress(1);
+          setTimeout(() => {
+            setIosPreviewMode(false);
+            setIosPreviewProgress(0);
+            setReelState("idle");
+          }, 800);
+        }
+      }
     };
 
     requestAnimationFrame(animate);
@@ -1013,8 +1027,33 @@ export default function ActivityDetail() {
         </div>
       )}
 
-      {/* Canvas for reel (hidden) */}
-      <canvas ref={canvasRef} className="hidden" />
+      {/* Canvas reel — nascosto normalmente, fullscreen in modalità iOS */}
+      <canvas ref={canvasRef} className={iosPreviewMode ? "fixed inset-0 z-50 w-screen h-screen object-contain bg-black" : "hidden"} />
+
+      {/* Overlay iOS: hint registrazione schermo */}
+      {iosPreviewMode && (
+        <div className="fixed inset-0 z-[60] pointer-events-none flex flex-col justify-between p-4">
+          {/* Top: istruzione */}
+          <div className="pointer-events-auto flex justify-center">
+            <div className="bg-amber-500/95 text-black rounded-2xl px-4 py-3 max-w-xs shadow-2xl">
+              <p className="text-sm font-bold text-center mb-0.5">📱 Registrazione Schermo attiva?</p>
+              <p className="text-xs text-center leading-snug">Centro di Controllo → cerchio puntato → tieni premuto → Avvia</p>
+            </div>
+          </div>
+          {/* Bottom: barra progresso + chiudi */}
+          <div className="pointer-events-auto space-y-2">
+            <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+              <div className="h-full bg-primary rounded-full transition-all duration-100" style={{ width: `${iosPreviewProgress * 100}%` }} />
+            </div>
+            <button
+              onClick={() => { setIosPreviewMode(false); setIosPreviewProgress(0); setReelState("idle"); }}
+              className="w-full py-3 bg-white/10 text-white rounded-xl text-sm font-semibold backdrop-blur-sm border border-white/20"
+            >
+              Chiudi anteprima
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">

@@ -49,7 +49,7 @@ function PillGroup<T extends string>({
 }
 
 export default function ReelOptions({ activityName, hasElevation, onStart, onCancel }: Props) {
-  const [style, setStyle]     = useState<'2d' | '3d'>(hasElevation ? '3d' : '2d');
+  const [style, setStyle]     = useState<'2d' | '3d'>('2d');
   const [format, setFormat]   = useState<'9:16' | '16:9'>('9:16');
   const [duration, setDuration] = useState(20);
   const [quality, setQuality] = useState<'standard' | 'hd'>('standard');
@@ -104,22 +104,6 @@ export default function ReelOptions({ activityName, hasElevation, onStart, onCan
                   title: '2D Cinematico',
                   sub: 'Mappa prospettica · alta compatibilità',
                 },
-                {
-                  id: '3d' as const,
-                  icon: (
-                    <svg viewBox="0 0 40 28" fill="none" className="w-10 h-7 mb-1.5">
-                      <rect width="40" height="28" rx="6" fill="#1e293b"/>
-                      <ellipse cx="20" cy="14" rx="12" ry="10" fill="#1e3a5f"/>
-                      <ellipse cx="20" cy="14" rx="12" ry="5" stroke="#3b82f6" strokeWidth="1" fill="none"/>
-                      <line x1="8" y1="14" x2="32" y2="14" stroke="#3b82f6" strokeWidth="0.8"/>
-                      <path d="M12 19 Q20 5 28 19" stroke="#22c55e" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
-                      <circle cx="20" cy="9" r="2" fill="#E11D48"/>
-                      <rect x="0" y="0" width="40" height="28" rx="6" stroke="#334155" strokeWidth="1" fill="none"/>
-                    </svg>
-                  ),
-                  title: '3D Terrain',
-                  sub: 'CesiumJS · rilievo reale',
-                },
               ] as const).map(opt => (
                 <button
                   key={opt.id}
@@ -135,6 +119,22 @@ export default function ReelOptions({ activityName, hasElevation, onStart, onCan
                   <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{opt.sub}</div>
                 </button>
               ))}
+
+              {/* 3D — prossimamente */}
+              <div className="relative text-left p-3.5 rounded-2xl border-2 border-border bg-muted/10 opacity-50 cursor-not-allowed select-none">
+                <svg viewBox="0 0 40 28" fill="none" className="w-10 h-7 mb-1.5">
+                  <rect width="40" height="28" rx="6" fill="#1e293b"/>
+                  <ellipse cx="20" cy="14" rx="12" ry="10" fill="#1e3a5f"/>
+                  <ellipse cx="20" cy="14" rx="12" ry="5" stroke="#3b82f6" strokeWidth="1" fill="none"/>
+                  <line x1="8" y1="14" x2="32" y2="14" stroke="#3b82f6" strokeWidth="0.8"/>
+                  <path d="M12 19 Q20 5 28 19" stroke="#22c55e" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+                  <circle cx="20" cy="9" r="2" fill="#E11D48"/>
+                  <rect x="0" y="0" width="40" height="28" rx="6" stroke="#334155" strokeWidth="1" fill="none"/>
+                </svg>
+                <div className="font-bold text-sm">3D Terrain</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">CesiumJS · rilievo reale</div>
+                <span className="absolute top-2 right-2 text-[10px] font-bold bg-zinc-700 text-zinc-200 px-1.5 py-0.5 rounded-full">Prossimamente</span>
+              </div>
             </div>
           </div>
 
