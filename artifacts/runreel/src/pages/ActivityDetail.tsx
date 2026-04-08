@@ -909,39 +909,47 @@ export default function ActivityDetail() {
             </div>
           </div>
 
-          {/* Anteprima video stile phone */}
+          {/* Anteprima video — phone frame per 9:16, widescreen per 16:9 */}
           <div className="flex justify-center mb-5">
-            <div className="relative" style={{ width: 160 }}>
-              {/* Cornice telefono */}
-              <div className="absolute inset-0 rounded-[22px] border-[5px] border-zinc-800 shadow-2xl pointer-events-none z-10" />
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-zinc-800 rounded-b-lg z-20" />
-              <video
-                ref={videoRef}
-                src={reelUrl}
-                autoPlay
-                loop
-                playsInline
-                muted
-                className="w-full rounded-[17px] block bg-black"
-                style={{ aspectRatio: "9/16" }}
-              />
-              {/* Pulsante play/pausa sopra il video */}
-              <button
-                onClick={() => {
-                  const v = videoRef.current;
-                  if (!v) return;
-                  v.paused ? v.play() : v.pause();
-                }}
-                className="absolute inset-0 flex items-center justify-center rounded-[17px] bg-black/0 hover:bg-black/20 transition-colors z-10 group"
-                aria-label="Pausa/Riproduci"
-              >
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 rounded-full p-3">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                </div>
-              </button>
-            </div>
+            {reelFormat === '9:16' ? (
+              <div className="relative" style={{ width: 160 }}>
+                <div className="absolute inset-0 rounded-[22px] border-[5px] border-zinc-800 shadow-2xl pointer-events-none z-10" />
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-zinc-800 rounded-b-lg z-20" />
+                <video
+                  ref={videoRef}
+                  src={reelUrl}
+                  autoPlay loop playsInline muted
+                  className="w-full rounded-[17px] block bg-black"
+                  style={{ aspectRatio: "9/16" }}
+                />
+                <button
+                  onClick={() => { const v = videoRef.current; if (!v) return; v.paused ? v.play() : v.pause(); }}
+                  className="absolute inset-0 flex items-center justify-center rounded-[17px] bg-black/0 hover:bg-black/20 transition-colors z-10 group"
+                >
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 rounded-full p-3">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+                  </div>
+                </button>
+              </div>
+            ) : (
+              <div className="relative w-full max-w-sm rounded-xl overflow-hidden shadow-2xl border border-zinc-800">
+                <video
+                  ref={videoRef}
+                  src={reelUrl}
+                  autoPlay loop playsInline muted
+                  className="w-full block bg-black"
+                  style={{ aspectRatio: "16/9" }}
+                />
+                <button
+                  onClick={() => { const v = videoRef.current; if (!v) return; v.paused ? v.play() : v.pause(); }}
+                  className="absolute inset-0 flex items-center justify-center bg-black/0 hover:bg-black/20 transition-colors group"
+                >
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 rounded-full p-3">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Bottoni azione */}
@@ -953,9 +961,28 @@ export default function ActivityDetail() {
                     const response = await fetch(reelUrl);
                     const blob = await response.blob();
                     const mimeBase = reelMimeType.split(";")[0];
-                    const file = new File([blob], `runreel-${activity.id}.${reelExtension}`, { type: mimeBase });
-                    await navigator.share({ files: [file], title: activity.name });
-                  } catch { /* ignore */ }
+                    const filename = `runreel-${activity.id}.${reelExtension}`;
+                    const file = new File([blob], filename, { type: mimeBase });
+                    const shareData = { files: [file], title: activity.name };
+                    if (navigator.canShare && navigator.canShare(shareData)) {
+                      await navigator.share(shareData);
+                    } else {
+                      // share file non supportato — fallback download diretto
+                      const a = document.createElement("a");
+                      a.href = URL.createObjectURL(blob);
+                      a.download = filename;
+                      a.click();
+                      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+                    }
+                  } catch (err: unknown) {
+                    // AbortError = utente ha annullato (ignorare)
+                    if (err instanceof DOMException && err.name === "AbortError") return;
+                    // Altro errore → fallback download
+                    const a = document.createElement("a");
+                    a.href = reelUrl;
+                    a.download = `runreel-${activity.id}.${reelExtension}`;
+                    a.click();
+                  }
                 }}
                 className="flex-1 px-4 py-2.5 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
               >
@@ -965,16 +992,20 @@ export default function ActivityDetail() {
                 Condividi
               </button>
             )}
-            <a
-              href={reelUrl}
-              download={`runreel-${activity.id}.${reelExtension}`}
+            <button
+              onClick={() => {
+                const a = document.createElement("a");
+                a.href = reelUrl;
+                a.download = `runreel-${activity.id}.${reelExtension}`;
+                a.click();
+              }}
               className="flex-1 px-4 py-2.5 border border-border rounded-lg text-sm font-semibold hover:bg-muted transition-colors flex items-center justify-center gap-2"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2v13M8 11l4 4 4-4" /><path d="M20 21H4" />
               </svg>
               Scarica {reelExtension.toUpperCase()}
-            </a>
+            </button>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             {reelFormat} · {reelDuration}s · {reelQualityOpt === 'hd' ? '16 Mbps HD' : '8 Mbps Standard'}
