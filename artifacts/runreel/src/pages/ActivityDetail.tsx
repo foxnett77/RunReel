@@ -174,6 +174,7 @@ export default function ActivityDetail() {
   const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
   const [iosPreviewMode, setIosPreviewMode] = useState(false);
   const [iosPreviewProgress, setIosPreviewProgress] = useState(0);
+  const [reelProgress, setReelProgress] = useState(0);
   const [reelDuration, setReelDuration] = useState(20);
   const [reelFormat, setReelFormat] = useState<'9:16' | '16:9'>('9:16');
   const [reelQualityOpt, setReelQualityOpt] = useState<'standard' | 'hd'>('standard');
@@ -320,10 +321,11 @@ export default function ActivityDetail() {
 
   const reelMimeType = (() => {
     const candidates = [
+      "video/mp4; codecs=avc1",
+      "video/mp4",
       "video/webm; codecs=vp9",
       "video/webm; codecs=vp8",
       "video/webm",
-      "video/mp4",
     ];
     return candidates.find(t => {
       try { return MediaRecorder.isTypeSupported(t); } catch { return false; }
@@ -342,6 +344,7 @@ export default function ActivityDetail() {
 
     setReelState("recording");
     setReelUrl(null);
+    setReelProgress(0);
 
     const W = format === '16:9' ? 1920 : 1080;
     const H = format === '16:9' ? 1080 : 1920;
@@ -806,7 +809,11 @@ export default function ActivityDetail() {
       drawRunner(frame, upTo);
       drawStats(rawT, upTo);
       frame++;
-      if (!recorder) setIosPreviewProgress(rawT);
+      if (recorder) {
+        setReelProgress(rawT);
+      } else {
+        setIosPreviewProgress(rawT);
+      }
       if (frame < TOTAL_FRAMES) {
         requestAnimationFrame(animate);
       } else {
@@ -1086,6 +1093,52 @@ export default function ActivityDetail() {
 
       {/* Elevation */}
       <ElevationChart points={points} />
+
+      {/* ── Overlay generazione video ─────────────────────────────────────── */}
+      {reelState === "recording" && !iosPreviewMode && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-6 px-6">
+          {/* Anello pulsante animato */}
+          <div className="relative flex items-center justify-center">
+            <span className="absolute inline-flex h-24 w-24 rounded-full bg-primary/30 animate-ping" />
+            <span className="absolute inline-flex h-16 w-16 rounded-full bg-primary/50 animate-ping" style={{ animationDelay: '0.2s' }} />
+            <span className="relative inline-flex h-10 w-10 rounded-full bg-primary items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                <path d="M15 10l4.553-2.069A1 1 0 0 1 21 8.87v6.26a1 1 0 0 1-1.447.9L15 14M3 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
+              </svg>
+            </span>
+          </div>
+
+          {/* Testo */}
+          <div className="text-center space-y-1">
+            <p className="text-white font-bold text-lg">Generazione video…</p>
+            <p className="text-white/60 text-sm">
+              {reelFormat} · {reelDuration}s · {reelQualityOpt === 'hd' ? 'HD 16 Mbps' : 'Standard 8 Mbps'}
+            </p>
+          </div>
+
+          {/* Barra progresso */}
+          <div className="w-full max-w-xs space-y-2">
+            <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary rounded-full transition-all duration-150"
+                style={{ width: `${Math.round(reelProgress * 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-white/50">
+              <span>{Math.round(reelProgress * 100)}%</span>
+              <span>
+                {reelProgress > 0
+                  ? `~${Math.max(0, Math.round(reelDuration * (1 - reelProgress)))}s`
+                  : `${reelDuration}s`}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-white/30 text-xs text-center">
+            L'elaborazione avviene sul tuo dispositivo
+          </p>
+        </div>
+      )}
 
       {/* Schermata opzioni reel */}
       {reelOptionsOpen && activity && (
