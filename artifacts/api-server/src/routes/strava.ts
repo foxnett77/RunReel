@@ -6,9 +6,18 @@ const router: IRouter = Router();
 
 const CLIENT_ID = process.env.STRAVA_CLIENT_ID ?? "";
 const CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET ?? "";
-const REDIRECT_BASE = process.env.STRAVA_REDIRECT_BASE ?? process.env.REPLIT_DEV_DOMAIN
-  ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-  : "http://localhost:3001";
+
+function getRedirectBase(req: import("express").Request): string {
+  // Use explicit override if set
+  if (process.env.STRAVA_REDIRECT_BASE) return process.env.STRAVA_REDIRECT_BASE;
+  // Prefer forwarded host (set by Replit proxy)
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "";
+  const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+  if (host) return `${proto}://${host}`;
+  // Fallback to REPLIT_DEV_DOMAIN
+  if (process.env.REPLIT_DEV_DOMAIN) return `https://${process.env.REPLIT_DEV_DOMAIN}`;
+  return "http://localhost:3001";
+}
 
 // ── Helper: refresh access token if expired ───────────────────────────────────
 async function ensureValidToken(conn: typeof stravaConnectionsTable.$inferSelect) {
@@ -55,9 +64,9 @@ router.get("/strava/status", async (_req, res): Promise<void> => {
 });
 
 // ── GET /api/strava/connect ───────────────────────────────────────────────────
-router.get("/strava/connect", (_req, res): void => {
+router.get("/strava/connect", (req, res): void => {
   if (!CLIENT_ID) { res.status(503).json({ error: "STRAVA_CLIENT_ID not configured" }); return; }
-  const redirectUri = `${REDIRECT_BASE}/api/strava/callback`;
+  const redirectUri = `${getRedirectBase(req)}/api/strava/callback`;
   const url = new URL("https://www.strava.com/oauth/authorize");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("redirect_uri", redirectUri);
