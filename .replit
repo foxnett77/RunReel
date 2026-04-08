@@ -27,3 +27,8 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+STRAVA_REDIRECT_BASE = "https://812a62da-d98f-4e7f-8ae3-17dfc6a6272b-00-sdq4bfy8cci0.riker.replit.dev"
