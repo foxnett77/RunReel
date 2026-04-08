@@ -1,4 +1,4 @@
-import { pgTable, serial, text, real, integer, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, real, integer, timestamp, jsonb, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -13,6 +13,7 @@ export const activitiesTable = pgTable("activities", {
   maxSpeedKmh: real("max_speed_kmh"),
   type: text("type").notNull().default("run"),
   points: jsonb("points").notNull().default([]),
+  stravaId: bigint("strava_id", { mode: "number" }).unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

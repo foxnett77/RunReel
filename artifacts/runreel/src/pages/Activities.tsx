@@ -5,6 +5,7 @@ import { formatDuration, formatDistance, formatPace, formatDate, activityTypeLab
 import { useQueryClient } from "@tanstack/react-query";
 import { getListActivitiesQueryKey, getGetStatsSummaryQueryKey } from "@workspace/api-client-react";
 import { useLang } from "@/lib/i18n";
+import StravaPanel from "@/components/StravaPanel";
 
 const TYPES = ["tutti", "run", "walk", "bike", "hike", "other"];
 
@@ -40,6 +41,14 @@ export default function Activities() {
             {tr("upload_gpx")}
           </span>
         </Link>
+      </div>
+
+      {/* Strava integration panel */}
+      <div className="mb-6">
+        <StravaPanel onSynced={() => {
+          queryClient.invalidateQueries({ queryKey: getListActivitiesQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getGetStatsSummaryQueryKey() });
+        }} />
       </div>
 
       {/* Filters */}

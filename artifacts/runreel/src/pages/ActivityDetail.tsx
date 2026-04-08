@@ -243,10 +243,12 @@ export default function ActivityDetail() {
     setReelUrl(null);
     setReelProgress(0);
 
-    const W = format === '16:9' ? 1920 : 1080;
-    const H = format === '16:9' ? 1080 : 1920;
-    const MAP_H = Math.round(H * 0.72);
-    const STATS_Y = MAP_H;
+    const isLandscape = format === '16:9';
+    const W = isLandscape ? 1920 : 1080;
+    const H = isLandscape ? 1080 : 1920;
+    // Landscape: mappa full-frame, stats overlay al fondo (70%–100%)
+    const MAP_H = H; // sempre piena altezza; in portrait la clip viene gestita da STATS_Y
+    const STATS_Y = isLandscape ? Math.round(H * 0.70) : Math.round(H * 0.72);
     const fps = 30;
     const DURATION_MS = durationSecs * 1000;
     const TOTAL_FRAMES = Math.round((DURATION_MS / 1000) * fps);
@@ -350,103 +352,155 @@ export default function ActivityDetail() {
     canvas.height = H;
     const ctx = canvas.getContext("2d")!;
 
-    // ── Musica rock sintetizzata via Web Audio ────────────────────────────────
+    // ── Musica rock — loop 8-battute con sezioni A/B/fill ────────────────────
     let audioDest: MediaStreamAudioDestinationNode | null = null;
     try {
       const audioCtx = new AudioContext();
       audioDest = audioCtx.createMediaStreamDestination();
-      // BPM e tonalità variano ad ogni video
-      const bpm = 142 + Math.floor(Math.random() * 20);   // 142–161
-      const beatSec = 60 / bpm;
-      const totalBeats = Math.ceil(DURATION_MS / 1000 / beatSec) + 8;
+      const bpm = 142 + Math.floor(Math.random() * 20); // 142–161
+      const bs = 60 / bpm; // durata un beat in secondi
+      const totalBeats = Math.ceil(DURATION_MS / 1000 / bs) + 12;
       const t0 = audioCtx.currentTime + 0.05;
-      // Tonalità base casuale (frequenza root tra 5 opzioni rock)
       const roots = [110, 116.5, 123.5, 130.8, 138.6];
       const root = roots[Math.floor(Math.random() * roots.length)];
 
-      // Compressore master
       const comp = audioCtx.createDynamicsCompressor();
-      comp.threshold.value = -18; comp.knee.value = 10;
-      comp.ratio.value = 6; comp.attack.value = 0.002; comp.release.value = 0.12;
+      comp.threshold.value = -16; comp.knee.value = 8; comp.ratio.value = 6;
+      comp.attack.value = 0.001; comp.release.value = 0.10;
       comp.connect(audioDest);
 
-      const kick = (t: number) => {
+      const kick = (t: number, vel = 1) => {
         const o = audioCtx.createOscillator(), g = audioCtx.createGain();
         o.connect(g); g.connect(comp);
-        o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(0.01, t + 0.55);
-        g.gain.setValueAtTime(2.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-        o.start(t); o.stop(t + 0.6);
-        // Sub layer
+        o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(0.01, t + 0.5);
+        g.gain.setValueAtTime(2.0 * vel, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        o.start(t); o.stop(t + 0.55);
         const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
-        o2.type = "sine"; o2.frequency.setValueAtTime(55, t); o2.frequency.exponentialRampToValueAtTime(20, t + 0.2);
-        g2.gain.setValueAtTime(1.5, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        o2.connect(g2); g2.connect(comp); o2.start(t); o2.stop(t + 0.25);
+        o2.type = "sine"; o2.frequency.setValueAtTime(52, t); o2.frequency.exponentialRampToValueAtTime(18, t + 0.18);
+        g2.gain.setValueAtTime(1.4 * vel, t); g2.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        o2.connect(g2); g2.connect(comp); o2.start(t); o2.stop(t + 0.22);
       };
 
-      const snare = (t: number) => {
-        const len = Math.floor(audioCtx.sampleRate * 0.18);
+      const snare = (t: number, vel = 1) => {
+        const len = Math.floor(audioCtx.sampleRate * 0.2);
         const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
         const d = buf.getChannelData(0);
-        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.5);
         const src = audioCtx.createBufferSource(); src.buffer = buf;
-        const bp = audioCtx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 3400; bp.Q.value = 0.5;
-        const g = audioCtx.createGain(); g.gain.setValueAtTime(1.4, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        const bp = audioCtx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 3200; bp.Q.value = 0.4;
+        const g = audioCtx.createGain(); g.gain.setValueAtTime(1.6 * vel, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
         src.connect(bp); bp.connect(g); g.connect(comp); src.start(t);
-        // Snare tone
         const o = audioCtx.createOscillator(), og = audioCtx.createGain();
-        o.frequency.value = 200; o.connect(og); og.connect(comp);
-        og.gain.setValueAtTime(0.4, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-        o.start(t); o.stop(t + 0.1);
+        o.frequency.value = 195; o.connect(og); og.connect(comp);
+        og.gain.setValueAtTime(0.35 * vel, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+        o.start(t); o.stop(t + 0.09);
       };
 
       const hihat = (t: number, vol: number, open = false) => {
-        const dur = open ? 0.18 : 0.035;
+        const dur = open ? 0.20 : 0.032;
         const len = Math.floor(audioCtx.sampleRate * dur);
         const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
         const d = buf.getChannelData(0);
         for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
         const src = audioCtx.createBufferSource(); src.buffer = buf;
-        const hp = audioCtx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 10000;
+        const hp = audioCtx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 10500;
         const g = audioCtx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
         src.connect(hp); hp.connect(g); g.connect(comp); src.start(t);
       };
 
-      // Chitarra power chord: fondamentale + quinta + ottava
-      const guitar = (t: number, freq: number, dur = 0.22) => {
+      // Power chord distorto (fondamentale + quinta + ottava)
+      const mkDist = () => {
+        const ws = audioCtx.createWaveShaper();
+        const n = 512, curve = new Float32Array(n), k = 90;
+        for (let i = 0; i < n; i++) { const x = (2 * i) / n - 1; curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x)); }
+        ws.curve = curve; return ws;
+      };
+      const guitar = (t: number, freq: number, dur: number, vol = 1) => {
         [freq, freq * 1.498, freq * 2].forEach((f, fi) => {
           const o = audioCtx.createOscillator(), g = audioCtx.createGain();
           o.type = "sawtooth"; o.frequency.value = f;
-          // Distorsione via waveshaper
-          const ws = audioCtx.createWaveShaper();
-          const n = 256, curve = new Float32Array(n);
-          const k = 80;
-          for (let i = 0; i < n; i++) { const x = (2 * i) / n - 1; curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x)); }
-          ws.curve = curve;
-          const lp = audioCtx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 2800;
+          const ws = mkDist();
+          const lp = audioCtx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 2600;
           o.connect(ws); ws.connect(lp); lp.connect(g); g.connect(comp);
-          const vol = fi === 0 ? 0.28 : 0.18;
-          g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-          o.start(t); o.stop(t + dur + 0.05);
+          const v = (fi === 0 ? 0.26 : 0.16) * vol;
+          g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+          o.start(t); o.stop(t + dur + 0.04);
         });
       };
 
-      // Progressione power chord casuale in 4/4 rock
+      // Basso (fondamentale un'ottava sotto, breve, percussivo)
+      const bass = (t: number, freq: number, dur: number) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = "sawtooth"; o.frequency.value = freq / 2;
+        const lp = audioCtx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 500;
+        o.connect(lp); lp.connect(g); g.connect(comp);
+        g.gain.setValueAtTime(0.55, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        o.start(t); o.stop(t + dur + 0.02);
+      };
+
+      // 3 progressioni di accordi casuali (ratios rispetto a root)
       const progressions = [
-        [1, 1, 0.75, 0.875],
-        [1, 0.75, 0.668, 0.75],
-        [1, 1, 0.891, 0.75],
+        [1, 0.75, 0.89, 0.75],   // i–VI–VII–VI
+        [1, 0.89, 0.75, 0.89],   // i–VII–VI–VII
+        [1, 1.19, 0.89, 1.0],    // i–III–VII–i
       ];
       const prog = progressions[Math.floor(Math.random() * progressions.length)];
 
+      // Struttura a frase da 8 battute:
+      //  Bar 0-1: sezione A (groove base)
+      //  Bar 2-3: sezione A con variazione kick
+      //  Bar 4-5: sezione B (high-energy, guitar stab)
+      //  Bar 6:   sezione B con open hihat
+      //  Bar 7:   fill batteria + crash
       for (let b = 0; b < totalBeats; b++) {
-        const t = t0 + b * beatSec;
-        const inBar = b % 4;
-        if (inBar === 0) { kick(t); guitar(t, root * prog[0], 0.55); }
-        if (inBar === 1) { snare(t); hihat(t + beatSec * 0.5, 0.35); }
-        if (inBar === 2) { kick(t); guitar(t, root * prog[2], 0.55); hihat(t, 0.22, true); }
-        if (inBar === 3) { snare(t); kick(t + beatSec * 0.75); guitar(t, root * prog[3], 0.4); }
-        hihat(t, 0.28);
-        if (b % 8 === 0) hihat(t, 0.5, true); // crash ogni 2 misure
+        const t = t0 + b * bs;
+        const beat = b % 4;
+        const bar = Math.floor(b / 4);
+        const phraseBar = bar % 8;
+        const chordFreq = root * prog[Math.floor(phraseBar / 2) % prog.length];
+        const isFill = phraseBar === 7;
+        const isHigh = phraseBar >= 4 && phraseBar <= 6;
+
+        // ── Batteria ──
+        if (isFill) {
+          if (beat === 0) { kick(t); snare(t + bs * 0.25); kick(t + bs * 0.5); snare(t + bs * 0.75); }
+          if (beat === 1) { kick(t); kick(t + bs * 0.33); snare(t + bs * 0.66); }
+          if (beat === 2) { snare(t, 1.2); kick(t + bs * 0.33); snare(t + bs * 0.66); }
+          if (beat === 3) { kick(t); snare(t + bs * 0.17); kick(t + bs * 0.33); snare(t + bs * 0.5); kick(t + bs * 0.67); snare(t + bs * 0.83); }
+          hihat(t, 0.14);
+        } else {
+          if (beat === 0) kick(t);
+          if (beat === 2) kick(t);
+          if (isHigh && beat === 3) kick(t + bs * 0.5);       // kick anticipato
+          if (phraseBar % 2 === 1 && beat === 1) kick(t + bs * 0.5); // sincopato
+          if (beat === 1 || beat === 3) snare(t);
+          if (isHigh && beat === 0) snare(t + bs * 0.5, 0.28); // ghost snare
+          hihat(t, isHigh ? 0.32 : 0.26);
+          hihat(t + bs * 0.5, isHigh ? 0.22 : 0.16);
+          if (isHigh) { hihat(t + bs * 0.25, 0.15); hihat(t + bs * 0.75, 0.15); }
+          if (phraseBar === 3 && beat === 2) hihat(t + bs * 0.5, 0.38, true);
+          if (phraseBar === 6 && beat === 2) hihat(t + bs * 0.5, 0.38, true);
+        }
+        // Crash all'inizio di ogni frase
+        if (phraseBar === 0 && beat === 0) hihat(t, 0.62, true);
+
+        // ── Chitarra ──
+        if (beat === 0) {
+          if (isFill) {
+            guitar(t, chordFreq, 0.18, 0.8);
+          } else if (isHigh) {
+            guitar(t, chordFreq, bs * 1.6);
+            if (beat === 0) guitar(t + bs * 2.5, chordFreq * 1.19, 0.18, 0.7); // stab su 3-e
+          } else {
+            guitar(t, chordFreq, bs * 3.6);
+          }
+        }
+        // Upstroke di passaggio ogni 4 battute
+        if (phraseBar % 4 === 3 && beat === 3) guitar(t + bs * 0.5, root * prog[(phraseBar + 1) % prog.length], 0.15, 0.6);
+
+        // ── Basso ──
+        if (beat === 0) bass(t, chordFreq, bs * 0.85);
+        if (isHigh && beat === 2) bass(t, chordFreq * 0.75, bs * 0.4);
       }
     } catch { /* audio non supportato */ }
 
@@ -618,6 +672,50 @@ export default function ActivityDetail() {
     const PAD = Math.round(60 * S);
 
     const drawStats = (rawT: number, upTo: number) => {
+      // ── Landscape (16:9) — overlay con layout orizzontale ──────────────────
+      if (isLandscape) {
+        const Sl = H / 1080;
+        const PAD_L = Math.round(56 * Sl);
+        const OVERLAY_TOP = STATS_Y - Math.round(70 * Sl);
+        const grad = ctx.createLinearGradient(0, OVERLAY_TOP, 0, H);
+        grad.addColorStop(0, "rgba(0,0,0,0)"); grad.addColorStop(0.28, "rgba(0,0,0,0.82)"); grad.addColorStop(1, "rgba(0,0,0,0.96)");
+        ctx.fillStyle = grad; ctx.fillRect(0, OVERLAY_TOP, W, H - OVERLAY_TOP);
+        ctx.fillStyle = "#E11D48"; ctx.fillRect(0, STATS_Y, W, Math.max(2, Math.round(3 * Sl)));
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#E11D48"; ctx.font = `bold ${Math.round(52 * Sl)}px Inter,system-ui,sans-serif`;
+        ctx.fillText("RunReel", PAD_L, STATS_Y + Math.round(66 * Sl));
+        ctx.fillStyle = "#fff"; ctx.font = `${Math.round(32 * Sl)}px Inter,system-ui,sans-serif`;
+        const nmx = Math.round(40 * (W / 1920));
+        const nm = activity.name.length > nmx ? activity.name.slice(0, nmx - 1) + "…" : activity.name;
+        ctx.fillText(nm, PAD_L, STATS_Y + Math.round(106 * Sl));
+        ctx.globalAlpha = Math.min(1, rawT * 4);
+        const cW = Math.round(296 * Sl), cH = Math.round(118 * Sl), cGap = Math.round(12 * Sl);
+        const cStartX = PAD_L + Math.round(420 * Sl), cY = STATS_Y + Math.round(12 * Sl);
+        const cardL = (idx: number, big: string, small: string) => {
+          const cx = cStartX + idx * (cW + cGap);
+          ctx.fillStyle = "rgba(255,255,255,0.11)";
+          ctx.beginPath(); ctx.roundRect(cx, cY, cW, cH, Math.round(10 * Sl)); ctx.fill();
+          ctx.fillStyle = "#fff"; ctx.font = `bold ${Math.round(38 * Sl)}px Inter,system-ui,sans-serif`;
+          ctx.fillText(big, cx + Math.round(14 * Sl), cY + Math.round(54 * Sl));
+          ctx.fillStyle = "rgba(255,255,255,0.52)"; ctx.font = `${Math.round(24 * Sl)}px Inter,system-ui,sans-serif`;
+          ctx.fillText(small, cx + Math.round(14 * Sl), cY + Math.round(90 * Sl));
+        };
+        const pace = activity.avgPaceSecPerKm ?? 0, dur = activity.durationSecs ?? 0;
+        cardL(0, `${activity.distanceKm?.toFixed(2)} km`, "distanza");
+        cardL(1, `${Math.floor(pace/60)}:${(pace%60).toString().padStart(2,"0")}/km`, "passo");
+        cardL(2, `${Math.floor(dur/3600)}h ${Math.floor((dur%3600)/60)}'`, "durata");
+        const hasEleL = perspCoords.some(c => c.ele > 0);
+        const cGL = cumEleGain[Math.min(upTo - 1, cumEleGain.length - 1)] ?? 0;
+        cardL(3, hasEleL ? `+${Math.round(cGL)} m` : `+${Math.round(activity.elevationGainM ?? 0)} m`, "dislivello ↑");
+        ctx.globalAlpha = 1;
+        const bY = STATS_Y + Math.round(144 * Sl);
+        ctx.fillStyle = "rgba(255,255,255,0.12)";
+        ctx.beginPath(); ctx.roundRect(PAD_L, bY, W - PAD_L * 2, Math.round(7 * Sl), 4); ctx.fill();
+        ctx.fillStyle = "#E11D48";
+        ctx.beginPath(); ctx.roundRect(PAD_L, bY, (W - PAD_L * 2) * rawT, Math.round(7 * Sl), 4); ctx.fill();
+        return;
+      }
+      // ── Portrait (9:16) ────────────────────────────────────────────────────
       ctx.fillStyle = "#0a0a0a";
       ctx.fillRect(0, STATS_Y, W, STATS_H);
       ctx.fillStyle = "#E11D48";
