@@ -126,9 +126,13 @@ router.post("/strava/sync", async (_req, res): Promise<void> => {
   if (!conn) { res.status(401).json({ error: "Not connected to Strava" }); return; }
   try {
     const token = await ensureValidToken(conn);
-    const afterTs = conn.lastSyncAt ? Math.floor(conn.lastSyncAt.getTime() / 1000) : 0;
+    // Always start from Jan 1 of the current year
+    const currentYearStart = Math.floor(new Date(`${new Date().getFullYear()}-01-01T00:00:00Z`).getTime() / 1000);
+    const afterTs = conn.lastSyncAt
+      ? Math.max(Math.floor(conn.lastSyncAt.getTime() / 1000), currentYearStart)
+      : currentYearStart;
     const activRes = await fetch(
-      `https://www.strava.com/api/v3/athlete/activities?per_page=50&after=${afterTs}`,
+      `https://www.strava.com/api/v3/athlete/activities?per_page=100&after=${afterTs}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     if (!activRes.ok) throw new Error("Failed to fetch activities");
