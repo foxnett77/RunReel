@@ -1,6 +1,10 @@
 import { Router, type IRouter } from "express";
 import { db, stravaConnectionsTable, activitiesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+
+function deviceId(req: import("express").Request): string {
+  return (req.headers["x-device-id"] as string) || "default";
+}
 
 const router: IRouter = Router();
 
@@ -51,9 +55,10 @@ function mapType(stravaType: string): string {
 }
 
 // ── GET /api/strava/status ────────────────────────────────────────────────────
-router.get("/strava/status", async (_req, res): Promise<void> => {
+router.get("/strava/status", async (req, res): Promise<void> => {
   if (!CLIENT_ID) { res.json({ connected: false, configured: false }); return; }
-  const [conn] = await db.select().from(stravaConnectionsTable).limit(1);
+  const [conn] = await db.select().from(stravaConnectionsTable)
+    .where(eq(stravaConnectionsTable.deviceId, deviceId(req))).limit(1);
   if (!conn) { res.json({ connected: false, configured: true }); return; }
   res.json({
     connected: true,
@@ -103,15 +108,17 @@ router.post("/strava/exchange", async (req, res): Promise<void> => {
       athlete: { id: number; firstname: string; lastname: string };
     };
     const athleteName = `${data.athlete.firstname} ${data.athlete.lastname}`.trim();
+    const did = deviceId(req);
     await db.insert(stravaConnectionsTable).values({
       athleteId: data.athlete.id,
       athleteName,
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt: data.expires_at,
+      deviceId: did,
     }).onConflictDoUpdate({
       target: stravaConnectionsTable.athleteId,
-      set: { accessToken: data.access_token, refreshToken: data.refresh_token, expiresAt: data.expires_at, athleteName },
+      set: { accessToken: data.access_token, refreshToken: data.refresh_token, expiresAt: data.expires_at, athleteName, deviceId: did },
     });
     res.json({ ok: true, athleteName });
   } catch (e) {
@@ -121,8 +128,10 @@ router.post("/strava/exchange", async (req, res): Promise<void> => {
 });
 
 // ── POST /api/strava/sync ─────────────────────────────────────────────────────
-router.post("/strava/sync", async (_req, res): Promise<void> => {
-  const [conn] = await db.select().from(stravaConnectionsTable).limit(1);
+router.post("/strava/sync", async (req, res): Promise<void> => {
+  const did = deviceId(req);
+  const [conn] = await db.select().from(stravaConnectionsTable)
+    .where(eq(stravaConnectionsTable.deviceId, did)).limit(1);
   if (!conn) { res.status(401).json({ error: "Not connected to Strava" }); return; }
   try {
     const token = await ensureValidToken(conn);
@@ -167,21 +176,30 @@ router.post("/strava/sync", async (_req, res): Promise<void> => {
         }
       } catch { /* stream not available */ }
 
-      await db.insert(activitiesTable).values({
-        name: sa.name,
-        date: sa.start_date_local.slice(0, 10),
-        distanceKm,
-        durationSecs: sa.moving_time ?? 0,
-        elevationGainM: sa.total_elevation_gain ?? null,
-        avgPaceSecPerKm,
-        maxSpeedKmh: sa.max_speed ? sa.max_speed * 3.6 : null,
-        type: mapType(sa.sport_type ?? sa.type),
-        points,
-        stravaId: sa.id,
-      }).onConflictDoUpdate({
-        target: activitiesTable.stravaId,
-        set: { name: sa.name, distanceKm, durationSecs: sa.moving_time ?? 0 },
-      });
+      // Upsert: check if this strava activity already exists for this device
+      const [existing] = await db.select({ id: activitiesTable.id })
+        .from(activitiesTable)
+        .where(and(eq(activitiesTable.stravaId, sa.id), eq(activitiesTable.deviceId, did)));
+
+      if (existing) {
+        await db.update(activitiesTable)
+          .set({ name: sa.name, distanceKm, durationSecs: sa.moving_time ?? 0, points })
+          .where(eq(activitiesTable.id, existing.id));
+      } else {
+        await db.insert(activitiesTable).values({
+          name: sa.name,
+          date: sa.start_date_local.slice(0, 10),
+          distanceKm,
+          durationSecs: sa.moving_time ?? 0,
+          elevationGainM: sa.total_elevation_gain ?? null,
+          avgPaceSecPerKm,
+          maxSpeedKmh: sa.max_speed ? sa.max_speed * 3.6 : null,
+          type: mapType(sa.sport_type ?? sa.type),
+          points,
+          stravaId: sa.id,
+          deviceId: did,
+        });
+      }
       imported++;
     }
 
@@ -197,8 +215,9 @@ router.post("/strava/sync", async (_req, res): Promise<void> => {
 });
 
 // ── DELETE /api/strava/disconnect ─────────────────────────────────────────────
-router.delete("/strava/disconnect", async (_req, res): Promise<void> => {
-  await db.delete(stravaConnectionsTable);
+router.delete("/strava/disconnect", async (req, res): Promise<void> => {
+  await db.delete(stravaConnectionsTable)
+    .where(eq(stravaConnectionsTable.deviceId, deviceId(req)));
   res.json({ ok: true });
 });
 

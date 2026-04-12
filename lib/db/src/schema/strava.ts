@@ -7,6 +7,7 @@ export const stravaConnectionsTable = pgTable("strava_connections", {
   accessToken: text("access_token").notNull(),
   refreshToken: text("refresh_token").notNull(),
   expiresAt: integer("expires_at").notNull(),
+  deviceId: text("device_id").notNull().default("default"),
   lastSyncAt: timestamp("last_sync_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });

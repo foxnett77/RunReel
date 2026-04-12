@@ -11,6 +11,13 @@ import Upload from "@/pages/Upload";
 import NotFound from "@/pages/not-found";
 import StravaCallback from "@/pages/StravaCallback";
 import { LangProvider } from "@/lib/i18n";
+import { setDeviceIdGetter } from "@workspace/api-client-react";
+import { getDeviceId, initDeviceId } from "@/lib/device";
+
+// Initialize device ID before first API call
+initDeviceId().then(() => {
+  setDeviceIdGetter(getDeviceId);
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {

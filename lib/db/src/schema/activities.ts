@@ -13,7 +13,8 @@ export const activitiesTable = pgTable("activities", {
   maxSpeedKmh: real("max_speed_kmh"),
   type: text("type").notNull().default("run"),
   points: jsonb("points").notNull().default([]),
-  stravaId: bigint("strava_id", { mode: "number" }).unique(),
+  stravaId: bigint("strava_id", { mode: "number" }),
+  deviceId: text("device_id").notNull().default("default"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { db, activitiesTable } from "@workspace/db";
 import {
   CreateActivityBody,
@@ -13,7 +13,12 @@ const PatchActivityParams = z.object({ id: z.number().int().positive() });
 
 const router: IRouter = Router();
 
+function deviceId(req: import("express").Request): string {
+  return (req.headers["x-device-id"] as string) || "default";
+}
+
 router.get("/activities", async (req, res): Promise<void> => {
+  const did = deviceId(req);
   const activities = await db
     .select({
       id: activitiesTable.id,
@@ -27,6 +32,7 @@ router.get("/activities", async (req, res): Promise<void> => {
       type: activitiesTable.type,
     })
     .from(activitiesTable)
+    .where(eq(activitiesTable.deviceId, did))
     .orderBy(desc(activitiesTable.date), desc(activitiesTable.createdAt));
   res.json(activities);
 });
@@ -50,6 +56,7 @@ router.post("/activities", async (req, res): Promise<void> => {
       maxSpeedKmh: parsed.data.maxSpeedKmh,
       type: parsed.data.type,
       points: parsed.data.points,
+      deviceId: deviceId(req),
     })
     .returning();
 
@@ -57,7 +64,11 @@ router.post("/activities", async (req, res): Promise<void> => {
 });
 
 router.get("/activities/stats/summary", async (req, res): Promise<void> => {
-  const activities = await db.select().from(activitiesTable);
+  const did = deviceId(req);
+  const activities = await db
+    .select()
+    .from(activitiesTable)
+    .where(eq(activitiesTable.deviceId, did));
 
   const totalActivities = activities.length;
   const totalDistanceKm = activities.reduce((s, a) => s + (a.distanceKm ?? 0), 0);
@@ -95,7 +106,7 @@ router.get("/activities/:id", async (req, res): Promise<void> => {
   const [activity] = await db
     .select()
     .from(activitiesTable)
-    .where(eq(activitiesTable.id, params.data.id));
+    .where(and(eq(activitiesTable.id, params.data.id), eq(activitiesTable.deviceId, deviceId(req))));
 
   if (!activity) {
     res.status(404).json({ error: "Activity not found" });
@@ -115,7 +126,7 @@ router.patch("/activities/:id", async (req, res): Promise<void> => {
   const [updated] = await db
     .update(activitiesTable)
     .set({ name: body.data.name })
-    .where(eq(activitiesTable.id, params.data.id))
+    .where(and(eq(activitiesTable.id, params.data.id), eq(activitiesTable.deviceId, deviceId(req))))
     .returning();
 
   if (!updated) { res.status(404).json({ error: "Activity not found" }); return; }
@@ -130,7 +141,9 @@ router.delete("/activities/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  await db.delete(activitiesTable).where(eq(activitiesTable.id, params.data.id));
+  await db.delete(activitiesTable).where(
+    and(eq(activitiesTable.id, params.data.id), eq(activitiesTable.deviceId, deviceId(req)))
+  );
   res.sendStatus(204);
 });
 

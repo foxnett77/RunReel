@@ -19,3 +19,4 @@
 
 export * from "./activities";
 export * from "./strava";
+export * from "./settings";
