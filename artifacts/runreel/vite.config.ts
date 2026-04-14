@@ -59,6 +59,23 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    target: "es2020",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react:    ["react", "react-dom"],
+          router:   ["wouter"],
+          query:    ["@tanstack/react-query"],
+          leaflet:  ["leaflet"],
+          ui:       [
+            "@radix-ui/react-tooltip",
+            "@radix-ui/react-dialog",
+            "@radix-ui/react-select",
+            "@radix-ui/react-slider",
+          ],
+        },
+      },
+    },
   },
   server: {
     port,

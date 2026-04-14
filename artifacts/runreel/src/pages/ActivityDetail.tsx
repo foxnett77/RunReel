@@ -6,8 +6,9 @@ import { useEffect, useRef, useState, useCallback, lazy, Suspense } from "react"
 import AnimatedMap3D, { type AnimatedMap3DHandle } from "@/components/AnimatedMap3D";
 import { useLang } from "@/lib/i18n";
 
-const CesiumReel = lazy(() => import('@/components/CesiumReel'));
-const ReelOptions = lazy(() => import('@/components/ReelOptions'));
+const CesiumReel    = lazy(() => import('@/components/CesiumReel'));
+const ReelOptions   = lazy(() => import('@/components/ReelOptions'));
+const PhotoOverlay  = lazy(() => import('@/components/PhotoOverlay'));
 
 // Lazy load Leaflet only in browser
 declare global {
@@ -172,6 +173,7 @@ export default function ActivityDetail() {
   const [reelUrl, setReelUrl] = useState<string | null>(null);
   const [reelOptionsOpen, setReelOptionsOpen] = useState(false);
   const [cesiumReelOpen, setCesiumReelOpen] = useState(false);
+  const [photoOverlayOpen, setPhotoOverlayOpen] = useState(false);
   const [iosPreviewMode, setIosPreviewMode] = useState(false);
   const [iosPreviewProgress, setIosPreviewProgress] = useState(0);
   const [reelProgress, setReelProgress] = useState(0);
@@ -941,7 +943,7 @@ export default function ActivityDetail() {
           )}
         </div>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap justify-end">
             <button
               onClick={() => setReelOptionsOpen(true)}
               disabled={reelState === "recording" || cesiumReelOpen}
@@ -951,6 +953,15 @@ export default function ActivityDetail() {
                 <circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/>
               </svg>
               {t("detail_create_reel")}
+            </button>
+            <button
+              onClick={() => setPhotoOverlayOpen(true)}
+              className="px-4 py-2 bg-secondary text-secondary-foreground rounded-lg text-sm font-bold hover:bg-secondary/80 transition-colors flex items-center gap-1.5 border border-border"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+              </svg>
+              {t("detail_photo_card")}
             </button>
             <button
               onClick={handleDelete}
@@ -1230,6 +1241,24 @@ export default function ActivityDetail() {
               setCesiumReelOpen(false);
             }}
             onCancel={() => setCesiumReelOpen(false)}
+          />
+        </Suspense>
+      )}
+
+      {/* Photo Card overlay */}
+      {photoOverlayOpen && activity && (
+        <Suspense fallback={null}>
+          <PhotoOverlay
+            activity={{
+              name: activity.name,
+              date: activity.date ?? "",
+              distanceKm: activity.distanceKm ?? null,
+              durationSecs: activity.durationSecs ?? null,
+              avgPaceSecPerKm: activity.avgPaceSecPerKm ?? null,
+              elevationGainM: activity.elevationGainM ?? null,
+            }}
+            points={(activity.points as Array<{ lat: number; lon: number; ele?: number }>) ?? []}
+            onClose={() => setPhotoOverlayOpen(false)}
           />
         </Suspense>
       )}

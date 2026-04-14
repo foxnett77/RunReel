@@ -50,6 +50,7 @@ const T = {
     detail_rename_placeholder: "Nome attività",
     detail_rename_save: "Salva",
     detail_rename_cancel: "Annulla",
+    detail_photo_card: "Photo Card",
 
     quality_standard: "12s",
     quality_hd: "HD 15s",
@@ -128,6 +129,7 @@ const T = {
     detail_rename_placeholder: "Activity name",
     detail_rename_save: "Save",
     detail_rename_cancel: "Cancel",
+    detail_photo_card: "Photo Card",
 
     quality_standard: "12s",
     quality_hd: "HD 15s",

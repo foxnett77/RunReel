@@ -113,7 +113,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="text-primary">Run</span>
                 <span className="text-foreground">Reel</span>
               </span>
-              <span className="text-[10px] font-normal text-muted-foreground">v 0.45</span>
+              <span className="text-[10px] font-normal text-muted-foreground">v 0.46</span>
             </span>
           </Link>
           <nav className="flex items-center gap-1">
