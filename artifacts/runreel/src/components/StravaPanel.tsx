@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLang } from "@/lib/i18n";
+import { getDeviceId } from "@/lib/device";
 
 interface StravaStatus {
   connected: boolean;
@@ -13,6 +14,13 @@ interface SyncResult {
   total: number;
 }
 
+function stravaFetch(path: string, init?: RequestInit) {
+  return fetch(path, {
+    ...init,
+    headers: { ...(init?.headers ?? {}), "X-Device-Id": getDeviceId() },
+  });
+}
+
 export default function StravaPanel({ onSynced }: { onSynced?: () => void }) {
   const { lang } = useLang();
   const [status, setStatus] = useState<StravaStatus | null>(null);
@@ -21,7 +29,7 @@ export default function StravaPanel({ onSynced }: { onSynced?: () => void }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    fetch("/api/strava/status").then(r => r.json()).then(setStatus).catch(() => {});
+    stravaFetch("/api/strava/status").then(r => r.json()).then(setStatus).catch(() => {});
     // Controlla hash per redirect post-OAuth
     if (window.location.hash === "#strava=ok") {
       window.location.hash = "";
@@ -33,12 +41,12 @@ export default function StravaPanel({ onSynced }: { onSynced?: () => void }) {
     setSyncing(true);
     setSyncResult(null);
     try {
-      const res = await fetch("/api/strava/sync", { method: "POST" });
+      const res = await stravaFetch("/api/strava/sync", { method: "POST" });
       const data = await res.json() as SyncResult;
       setSyncResult(data);
       onSynced?.();
       // Refresh status
-      const st = await fetch("/api/strava/status").then(r => r.json()) as StravaStatus;
+      const st = await stravaFetch("/api/strava/status").then(r => r.json()) as StravaStatus;
       setStatus(st);
     } catch { /* ignore */ } finally {
       setSyncing(false);
@@ -47,7 +55,7 @@ export default function StravaPanel({ onSynced }: { onSynced?: () => void }) {
 
   const handleDisconnect = async () => {
     if (!confirm(lang === "it" ? "Disconnettere Strava?" : "Disconnect Strava?")) return;
-    await fetch("/api/strava/disconnect", { method: "DELETE" });
+    await stravaFetch("/api/strava/disconnect", { method: "DELETE" });
     setStatus({ connected: false, configured: true });
     setSyncResult(null);
   };

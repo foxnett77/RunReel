@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
+import { getDeviceId } from "@/lib/device";
 
 export default function StravaCallback() {
   const [, navigate] = useLocation();
@@ -18,7 +19,7 @@ export default function StravaCallback() {
 
     fetch("/api/strava/exchange", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Device-Id": getDeviceId() },
       body: JSON.stringify({ code }),
     })
       .then((r) => {
