@@ -11,14 +11,12 @@ const router: IRouter = Router();
 const CLIENT_ID = process.env.STRAVA_CLIENT_ID ?? "";
 const CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET ?? "";
 
-function getRedirectBase(req: import("express").Request): string {
-  // Use explicit override if set
+function getRedirectBase(_req: import("express").Request): string {
+  // Explicit override wins
   if (process.env.STRAVA_REDIRECT_BASE) return process.env.STRAVA_REDIRECT_BASE;
-  // Prefer forwarded host (set by Replit proxy)
-  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "";
-  const proto = (req.headers["x-forwarded-proto"] as string) || "https";
-  if (host) return `${proto}://${host}`;
-  // Fallback to REPLIT_DEV_DOMAIN
+  // Use the stable Replit dev domain — this is what must be registered on Strava.
+  // We intentionally do NOT use x-forwarded-host here because the published domain
+  // may differ from what the user registered on the Strava developer portal.
   if (process.env.REPLIT_DEV_DOMAIN) return `https://${process.env.REPLIT_DEV_DOMAIN}`;
   return "http://localhost:3001";
 }
