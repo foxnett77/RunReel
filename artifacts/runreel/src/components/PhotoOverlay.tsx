@@ -326,10 +326,14 @@ export default function PhotoOverlay({ activity, points, onClose }: Props) {
   const canShare = typeof navigator !== "undefined" && "share" in navigator && "canShare" in navigator;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 overflow-y-auto">
-      <div className="bg-card border border-border rounded-2xl w-full max-w-3xl shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm overflow-y-auto overscroll-none"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="flex min-h-full items-end sm:items-center justify-center sm:p-4">
+      <div className="bg-card border border-border rounded-t-2xl sm:rounded-2xl w-full max-w-3xl shadow-2xl">
+        {/* Header — sticky so sempre visibile */}
+        <div className="sticky top-0 z-10 bg-card flex items-center justify-between px-5 py-4 border-b border-border rounded-t-2xl sm:rounded-t-2xl">
           <div className="flex items-center gap-2">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
               <rect x="3" y="3" width="18" height="18" rx="2"/>
@@ -345,7 +349,7 @@ export default function PhotoOverlay({ activity, points, onClose }: Props) {
 
         <div className="flex flex-col md:flex-row gap-0">
           {/* Controls */}
-          <div className="md:w-64 p-5 border-b md:border-b-0 md:border-r border-border flex flex-col gap-5">
+          <div className="md:w-64 p-5 border-b md:border-b-0 md:border-r border-border flex flex-col gap-5 order-2 md:order-1">
             {/* Photo upload */}
             <div>
               <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">
@@ -451,13 +455,13 @@ export default function PhotoOverlay({ activity, points, onClose }: Props) {
           </div>
 
           {/* Preview */}
-          <div className="flex-1 p-5 flex flex-col items-center justify-center bg-muted/30 rounded-b-2xl md:rounded-r-2xl md:rounded-bl-none">
+          <div className="flex-1 p-5 flex flex-col items-center justify-center bg-muted/30 rounded-b-2xl md:rounded-r-2xl md:rounded-bl-none order-1 md:order-2">
             <p className="text-xs text-muted-foreground mb-3">Anteprima</p>
             {previewUrl ? (
               <img
                 src={previewUrl}
                 alt="Preview"
-                className="rounded-xl shadow-xl max-w-full max-h-[60vh] object-contain"
+                className="rounded-xl shadow-xl max-w-full max-h-[40vh] sm:max-h-[60vh] object-contain"
                 style={{ aspectRatio: `${FORMATS[format].w}/${FORMATS[format].h}` }}
               />
             ) : (
@@ -475,6 +479,7 @@ export default function PhotoOverlay({ activity, points, onClose }: Props) {
 
         {/* Hidden canvas for rendering */}
         <canvas ref={canvasRef} className="hidden" />
+      </div>
       </div>
     </div>
   );
